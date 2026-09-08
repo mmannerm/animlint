@@ -51,7 +51,7 @@ libm = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_jcs = "0.2"
-jsonschema = { version = "0.52", default-features = false }
+jsonschema = { version = "0.53", default-features = false }
 thiserror = "2"
 gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
