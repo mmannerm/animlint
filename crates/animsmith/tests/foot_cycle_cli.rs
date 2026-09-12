@@ -25,6 +25,19 @@ impl FootCycleFixture {
     }
 
     fn create_with_cyclic_contacts(cyclic_contacts: bool) -> Self {
+        Self::create_sampled(cyclic_contacts, SIXTEENTHS)
+    }
+
+    /// The same two-member locomotion set sampled at 30 fps.
+    ///
+    /// The stance windows stay at their normalized positions, so every stance
+    /// boundary still lands on an authored frame, but the authored times are
+    /// no longer exact binary32 fractions of the clip duration.
+    fn create_at_thirty_fps(frames: usize) -> Self {
+        Self::create_sampled(false, Sampling { frames, rate: 30.0 })
+    }
+
+    fn create_sampled(cyclic_contacts: bool, sampling: Sampling) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_path_buf();
         fs::create_dir(root.join("assets")).unwrap();
@@ -34,28 +47,20 @@ impl FootCycleFixture {
             write_source(
                 &root,
                 "a",
+                sampling,
                 |index| index <= 4 || index >= 12,
                 |index| (3..=13).contains(&index),
             );
             write_source(
                 &root,
                 "b",
+                sampling,
                 |index| index <= 5 || index >= 13,
                 |index| (4..=14).contains(&index),
             );
         } else {
-            write_source(
-                &root,
-                "a",
-                |index| (2..=4).contains(&index),
-                |index| (10..=12).contains(&index),
-            );
-            write_source(
-                &root,
-                "b",
-                |index| (4..=6).contains(&index),
-                |index| (12..=14).contains(&index),
-            );
+            write_stance_source(&root, "a", sampling, 0.0);
+            write_stance_source(&root, "b", sampling, MEMBER_B_PHASE_OFFSET);
         }
         fs::write(
             root.join("config.toml"),
@@ -210,16 +215,59 @@ fn assert_success(output: &Output) {
     );
 }
 
+/// Authored sampling of one synthetic locomotion source: `frames` keys at
+/// `index as f32 / rate`, so the clip lasts `(frames - 1) / rate` seconds.
+#[derive(Clone, Copy)]
+struct Sampling {
+    frames: usize,
+    rate: f32,
+}
+
+/// 17 keys at 16 fps: every authored time is an exact binary32 sixteenth of
+/// the one-second duration, so a control point at a stance boundary is the
+/// exact authored instant in every arithmetic domain.
+const SIXTEENTHS: Sampling = Sampling {
+    frames: 17,
+    rate: 16.0,
+};
+
+/// Normalized stance windows of the reference member, as `[start, end]`.
+const LEFT_STANCE: [f64; 2] = [0.10, 0.28];
+/// Normalized right-foot stance window of the reference member.
+const RIGHT_STANCE: [f64; 2] = [0.60, 0.78];
+/// Phase by which member `b` runs the same gait later than member `a`, which
+/// is what makes `b`'s planned time warp non-identity.
+const MEMBER_B_PHASE_OFFSET: f64 = 0.12;
+
+/// Write one member whose stances occupy the shared normalized windows shifted
+/// later by `phase_offset`.
+fn write_stance_source(root: &Path, stem: &str, sampling: Sampling, phase_offset: f64) {
+    let stance = |window: [f64; 2]| {
+        move |index: usize| {
+            let phase = index as f64 / (sampling.frames - 1) as f64 - phase_offset;
+            (window[0]..=window[1]).contains(&phase)
+        }
+    };
+    write_source(
+        root,
+        stem,
+        sampling,
+        stance(LEFT_STANCE),
+        stance(RIGHT_STANCE),
+    );
+}
+
 fn write_source(
     root: &Path,
     stem: &str,
+    sampling: Sampling,
     left_contact: impl Fn(usize) -> bool,
     right_contact: impl Fn(usize) -> bool,
 ) {
-    let frames = 17_usize;
+    let Sampling { frames, rate } = sampling;
     let mut bytes = Vec::new();
     for index in 0..frames {
-        bytes.extend_from_slice(&(index as f32 / 16.0).to_le_bytes());
+        bytes.extend_from_slice(&(index as f32 / rate).to_le_bytes());
     }
     let root_translation_offset = bytes.len();
     for _ in 0..frames {
@@ -268,7 +316,7 @@ fn write_source(
             {"buffer": 0, "byteOffset": right_offset, "byteLength": bytes.len() - right_offset}
         ],
         "accessors": [
-            {"bufferView": 0, "componentType": 5126, "count": frames, "type": "SCALAR", "min": [0.0], "max": [1.0]},
+            {"bufferView": 0, "componentType": 5126, "count": frames, "type": "SCALAR", "min": [0.0], "max": [(frames - 1) as f32 / rate]},
             {"bufferView": 1, "componentType": 5126, "count": frames, "type": "VEC3"},
             {"bufferView": 2, "componentType": 5126, "count": frames, "type": "VEC4"},
             {"bufferView": 3, "componentType": 5126, "count": frames, "type": "VEC3"},
