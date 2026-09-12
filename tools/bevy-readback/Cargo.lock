@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-core"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "glam 0.33.6",
  "serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-engine"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "blake3",
