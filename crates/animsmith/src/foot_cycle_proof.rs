@@ -777,11 +777,8 @@ fn prove_clip_map(
         // see `FootCycleClipWarpKnotV1`. What the proof keeps to itself is the
         // expectation, which it derives from the source clip and the operation
         // alone and then compares bit for bit against the produced clip.
-        let mut knots = time_warp_knots_v1(control_points, duration, source)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .peekable();
-        let mut expected = Vec::with_capacity(source.times.len() + knots.len());
+        let mut knots = time_warp_knots_v1(control_points, duration, source).peekable();
+        let mut expected = Vec::with_capacity(source.times.len() + control_points.len());
         for key in 0..source.times.len() {
             let source_time = source.times[key];
             while knots.peek().is_some_and(|knot| {

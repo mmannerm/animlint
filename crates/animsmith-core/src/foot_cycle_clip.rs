@@ -337,12 +337,16 @@ impl FootCycleClipWarpKnotV1 {
 
     /// Whether the authored key stored at `authored_time` is this same instant.
     ///
-    /// Binary32 is the domain the candidate stores, and two adjacent binary32
-    /// times have no representable instant between them, so a key at each is
-    /// two spellings of one instant rather than two instants. A normalized
-    /// control point reconstructed as `input_time * duration` lands on its
-    /// authored key or one place beside it, so the predicate admits both and
-    /// nothing wider: a key two places away is a different instant.
+    /// A control point and an authored key are two computations of one
+    /// instant: the plan carries a normalized phase, the track carries a
+    /// binary32 time, and reconstructing the phase as `input_time * duration`
+    /// reproduces that stored time or lands one representable place beside it.
+    /// Binary32 is the domain the candidate stores and nothing is
+    /// representable between two adjacent values there, so emitting a key at
+    /// each would spell one instant twice. The predicate therefore admits both
+    /// and nothing wider: a key two places away is a different instant. It
+    /// asks only about a reconstructed control point; two authored keys one
+    /// place apart remain the two instants the track authored.
     #[must_use]
     pub fn coincides_with(self, authored_time: f32) -> bool {
         self.source_time == authored_time
@@ -358,11 +362,16 @@ impl FootCycleClipWarpKnotV1 {
 /// knots: a STEP track maps its authored breakpoints and a retained cubic
 /// track is copied. The map's endpoints are exact, so only its interior points
 /// can contribute a knot, and only where the narrowed instant falls strictly
-/// inside the track's authored span without being the same instant as either
-/// end of it: the map's own `(0,0)` and `(1,1)` rows define the output at the
-/// span ends, so an interior point beside one of them neither adds a key nor
-/// re-times the authored key there. Knots are yielded in nondecreasing source
-/// order.
+/// inside the track's authored span.
+///
+/// A knot that is the same instant as a source endpoint — `0` or `duration` —
+/// contributes nothing at all. [`map_time`] evaluates the exact `(0,0)` and
+/// `(1,1)` rows there, so a candidate retains those two instants as
+/// themselves; letting an interior point re-time a key there would silently
+/// start the candidate late or end it early instead. Every other authored key
+/// the map has a control point for takes that point's output.
+///
+/// Knots are yielded in nondecreasing source order.
 pub fn time_warp_knots_v1<'a>(
     control_points: &'a [ContactTimeWarpControlPointV1],
     duration: f32,
@@ -388,8 +397,8 @@ pub fn time_warp_knots_v1<'a>(
         .filter(move |knot| {
             knot.source_time > start_time
                 && knot.source_time < end_time
-                && !knot.coincides_with(start_time)
-                && !knot.coincides_with(end_time)
+                && !knot.coincides_with(0.0)
+                && !knot.coincides_with(duration)
         })
 }
 
@@ -1450,14 +1459,14 @@ mod tests {
         );
     }
 
-    /// A control point that is the same instant as an end of the track's
-    /// authored span neither adds a key nor re-times the key there.
+    /// A control point that is the same instant as a source endpoint neither
+    /// adds a key nor re-times the key there.
     ///
-    /// The map's exact `(0,0)` and `(1,1)` rows define the output at the span
-    /// ends. Letting an interior point win there would silently end the
-    /// candidate track early, or start it late, without a refusal.
+    /// The map's exact `(0,0)` and `(1,1)` rows define the output at `0` and
+    /// at the duration. Letting an interior point win there would silently end
+    /// the candidate track early, or start it late, without a refusal.
     #[test]
-    fn interior_control_point_beside_a_span_end_leaves_it_alone() {
+    fn interior_control_point_beside_a_source_endpoint_contributes_nothing() {
         let above_start = f64::from(f32::from_bits(1));
         let below_end = f64::from(f32::from_bits(1.0_f32.to_bits() - 1));
         let source = clip(
@@ -1492,30 +1501,70 @@ mod tests {
         );
     }
 
+    /// The source-endpoint exception is exactly that, and no wider: a track
+    /// whose authored span ends before the clip does has no exact map row at
+    /// its own last key, so a control point beside that key is still that key.
+    #[test]
+    fn interior_control_point_beside_a_track_span_end_still_coalesces() {
+        let end = 0.75_f32;
+        let below_end = f64::from(f32::from_bits(end.to_bits() - 1));
+        let source = clip(
+            1.0,
+            vec![vec_track(
+                Interpolation::Linear,
+                vec![0.25, 0.5, end],
+                vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)],
+            )],
+        );
+        let plan = plan(
+            1.0,
+            &[
+                (0.0, 0.0),
+                (below_end, 0.5),
+                (0.750_000_1, 0.95),
+                (1.0, 1.0),
+            ],
+        );
+        let points = plan.operation().control_points().unwrap();
+        assert_ne!(map_time(end, 1.0, points), 0.5);
+
+        let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+
+        assert_eq!(candidate.tracks[0].times.len(), 3);
+        assert_eq!(
+            candidate.tracks[0].times[2], 0.5,
+            "the track's own last key is an ordinary coincidence"
+        );
+        assert_eq!(vec_values(&candidate.tracks[0])[2], Vec3::splat(2.0));
+    }
+
     /// A control point one binary32 place from an authored key is that key.
     ///
     /// Nothing is representable between the two, so a candidate that stored a
     /// key at each would carry two spellings of one instant. The pair is one
     /// emitted key: the authored time, the authored value, and the control
     /// point's own output.
-    /// Ordinary 30 fps locomotion sets coalesce every stance-boundary control
-    /// point, so the candidate keeps exactly the authored key count.
+    /// Ordinary locomotion sets coalesce every stance-boundary control point,
+    /// so the candidate keeps exactly the authored key count.
     ///
     /// Stance boundaries are authored frame indices, so the plan's normalized
     /// input is `frame / (frames - 1)`. Reconstructing that instant as
     /// `input * duration` reproduces the authored binary32 time for most key
-    /// counts in this range and lands one place below it for the rest; both
-    /// are the same instant, so neither adds a key.
+    /// counts and rates in this range and lands one place below it for the
+    /// rest; both are the same instant, so neither adds a key.
     #[test]
-    fn thirty_fps_stance_boundaries_coalesce_for_every_key_count() {
-        for frames in 18..=61_usize {
+    fn stance_boundaries_coalesce_for_every_key_count_and_rate() {
+        for (rate, frames) in [24.0_f32, 30.0, 60.0]
+            .into_iter()
+            .flat_map(|rate| (18..=61_usize).map(move |frames| (rate, frames)))
+        {
             let last = frames - 1;
-            let duration = f64::from(last as f32 / 30.0);
+            let duration = f64::from(last as f32 / rate);
             let source = clip(
                 duration,
                 vec![vec_track(
                     Interpolation::Linear,
-                    (0..frames).map(|key| key as f32 / 30.0).collect(),
+                    (0..frames).map(|key| key as f32 / rate).collect(),
                     (0..frames).map(|key| Vec3::splat(key as f32)).collect(),
                 )],
             );
@@ -1537,7 +1586,7 @@ mod tests {
             assert_eq!(
                 times.len(),
                 frames,
-                "{frames} keys: coalescing must not add a key"
+                "{frames} keys at {rate} fps: coalescing must not add a key"
             );
             assert_eq!(preflight.candidate_keys(), frames);
             assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
@@ -1545,7 +1594,7 @@ mod tests {
                 assert_eq!(
                     times[input],
                     (phase(output) * duration) as f32,
-                    "{frames} keys: authored key {input} must carry its control point output"
+                    "{frames} keys at {rate} fps: key {input} must carry its control point output"
                 );
             }
             assert_eq!(
@@ -1553,7 +1602,7 @@ mod tests {
                 &(0..frames)
                     .map(|key| Vec3::splat(key as f32))
                     .collect::<Vec<_>>(),
-                "{frames} keys: every emitted key keeps its authored value"
+                "{frames} keys at {rate} fps: every emitted key keeps its authored value"
             );
         }
     }

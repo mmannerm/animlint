@@ -244,8 +244,11 @@ one emitted key: it keeps the authored time and the authored value and carries
 the control point's own output, because the control point is the definition of
 the map at that instant. `FootCycleClipWarpKnotV1` is the one definition of that
 question, and the independent output proof rebuilds its expectation through it.
-Distinct generated source instants and distinct output instants that collide
-after binary32 narrowing refuse. One-key CUBICSPLINE tracks are
+The exception is a map knot that is the same instant as a source endpoint, `0`
+or the duration: the map's exact endpoint rows define the output there and a
+candidate retains those two instants as themselves, so such a knot contributes
+nothing. Distinct generated source instants and distinct output instants that
+collide after binary32 narrowing refuse. One-key CUBICSPLINE tracks are
 retained, and multi-key cubic tracks are retained only for bit-exact constant
 values with zero tangents. The value caps are the shape-derived
 three-values-per-cubic-key maxima, so malformed N+1 storage refuses at shape or

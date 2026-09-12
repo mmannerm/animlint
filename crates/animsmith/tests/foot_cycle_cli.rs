@@ -899,25 +899,25 @@ fn published_track_times(artifact: &[u8]) -> Vec<Vec<f32>> {
 /// control point is an authored key; whether reconstructing its instant lands
 /// on that key or one binary32 place beside it varies with the key count, and
 /// before this contract it decided between a transform refusal, a `ClipMap`
-/// proof failure, and publication.
+/// proof failure, and publication. This is the only test that carries the
+/// whole range through the independent proof and the publication transaction;
+/// the builder's own sweep over three frame rates is a core unit test.
 #[test]
 fn every_key_count_from_eighteen_to_sixty_one_publishes() {
-    for rate in [30.0, 60.0] {
-        for frames in 18..=61 {
-            let fixture = FootCycleFixture::create_at(frames, rate);
-            let result = fixture.run();
-            assert_eq!(
-                result.status.code(),
-                Some(0),
-                "{frames} keys at {rate} fps: {}",
-                String::from_utf8_lossy(&result.stdout),
-            );
-            assert!(
-                fixture
-                    .destination
-                    .join("members/000001/artifact.glb")
-                    .is_file()
-            );
-        }
+    for frames in 18..=61 {
+        let fixture = FootCycleFixture::create_at_thirty_fps(frames);
+        let result = fixture.run();
+        assert_eq!(
+            result.status.code(),
+            Some(0),
+            "{frames} keys: {}",
+            String::from_utf8_lossy(&result.stdout),
+        );
+        assert!(
+            fixture
+                .destination
+                .join("members/000001/artifact.glb")
+                .is_file()
+        );
     }
 }
