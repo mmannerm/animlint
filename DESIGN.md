@@ -4042,9 +4042,12 @@ silently collapsed. A map knot and an authored key that are the same instant in
 that emitted binary32 domain — equal, or one representable place apart, since
 nothing is representable between them — are one emitted key at the authored
 time and value, carrying the control point's own output.
-`FootCycleClipWarpKnotV1` is the single definition of that question; the
-independent `ClipMap` proof in the CLI crate rebuilds its own expectation
-through the same definition rather than spelling coincidence a second way. An
+`FootCycleClipWarpKnotV1` is the single definition of that question, and
+`time_warp_rows_v1` merges a track's authored keys with its knots into the key
+sequence a candidate stores. The rows carry no output time and no value, so the
+independent `ClipMap` proof in the CLI crate consumes them for the sequence
+while still computing every expected time and value itself, rather than
+spelling coincidence a second way. An
 interior point that is the same instant as a source endpoint — `0` or the
 duration — contributes nothing, because the exact endpoint rows define the
 output there and a candidate retains those two instants as themselves.

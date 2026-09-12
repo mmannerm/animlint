@@ -18,10 +18,10 @@ use animsmith_core::{
     ContactTransformOperationV1, ContactTransformResultV1, DependencyClosureIdentityV1,
     DependencyClosureV1, DependencyReferenceTargetV1, Document,
     FOOT_CYCLE_PARAMETERIZATION_V1_MAX_ACCUMULATED_YAW_DEG,
-    FOOT_CYCLE_PARAMETERIZATION_V1_MAX_HORIZONTAL_DISPLACEMENT_M, FootCycleRootMotionEvidenceV1,
-    InputIdentity, Interpolation, MetricGrids, PoseGrid, ResolutionOutcome, Role, Track,
-    TrackSample, TrackValues, resolve_configured_roles, sample_track, time_warp_knots_v1,
-    validate_document_shape,
+    FOOT_CYCLE_PARAMETERIZATION_V1_MAX_HORIZONTAL_DISPLACEMENT_M, FootCycleClipWarpRowV1,
+    FootCycleRootMotionEvidenceV1, InputIdentity, Interpolation, MetricGrids, PoseGrid,
+    ResolutionOutcome, Role, Track, TrackSample, TrackValues, resolve_configured_roles,
+    sample_track, time_warp_rows_v1, validate_document_shape,
 };
 use animsmith_gltf::write::{
     GlbProjectionPolicyV1, GlbWriteLimits, GlbWritePreflight, preflight_glb_bytes, write_glb_bytes,
@@ -771,30 +771,27 @@ fn prove_clip_map(
             }
             continue;
         }
-        // Coincidence between a control point and an authored key is the
-        // producer's contract, not this proof's opinion, so the expectation is
-        // rebuilt from the same emitted-binary32 question the builder asks:
-        // see `FootCycleClipWarpKnotV1`. What the proof keeps to itself is the
-        // expectation, which it derives from the source clip and the operation
-        // alone and then compares bit for bit against the produced clip.
-        let mut knots = time_warp_knots_v1(control_points, duration, source).peekable();
+        // Which keys the candidate stores, and in what order, is the
+        // producer's contract rather than this proof's opinion, so the rows
+        // come from the one shared answer (`FootCycleClipWarpRowV1`). What the
+        // proof keeps to itself is every value in the expectation: each output
+        // time through its own `map_source_time`, each stored value from the
+        // source clip, compared bit for bit against the reread candidate.
         let mut expected = Vec::with_capacity(source.times.len() + control_points.len());
-        for key in 0..source.times.len() {
-            let source_time = source.times[key];
-            while knots.peek().is_some_and(|knot| {
-                knot.source_time() < source_time && !knot.coincides_with(source_time)
-            }) {
-                let knot = knots.next().expect("peeked knot");
-                expected.push((knot.output_time(), sample_track(source, knot.source_time())));
-            }
-            let output_time = match knots.next_if(|knot| knot.coincides_with(source_time)) {
-                Some(knot) => knot.output_time(),
-                None => map_source_time(source_time, duration, control_points)?,
+        for row in time_warp_rows_v1(control_points, duration, source) {
+            let expectation = match row {
+                FootCycleClipWarpRowV1::Authored(key) => (
+                    map_source_time(source.times[key], duration, control_points)?,
+                    key_sample(source, key)?,
+                ),
+                FootCycleClipWarpRowV1::Knot(knot) => {
+                    (knot.output_time(), sample_track(source, knot.source_time()))
+                }
+                FootCycleClipWarpRowV1::Coalesced(key, knot) => {
+                    (knot.output_time(), key_sample(source, key)?)
+                }
             };
-            expected.push((output_time, key_sample(source, key)?));
-        }
-        for knot in knots {
-            expected.push((knot.output_time(), sample_track(source, knot.source_time())));
+            expected.push(expectation);
         }
         if expected.len() != output.times.len()
             || expected.windows(2).any(|pair| pair[0].0 >= pair[1].0)
@@ -1741,6 +1738,60 @@ mod tests {
             .kind(),
             FootCycleProofKind::ClipMap,
             "the coalesced key carries the control point output, not the mapped one"
+        );
+    }
+
+    /// The far edge of the same contract, from the proof's side: a control
+    /// point two binary32 places from an authored key is a second instant, so
+    /// the proof expects a key for each and refuses a coalesced pair.
+    #[test]
+    fn clip_map_proof_expects_two_keys_two_places_apart() {
+        let authored_time = 0.5_f32;
+        let two_below = f32::from_bits(authored_time.to_bits() - 2);
+        let values = vec![
+            animsmith_core::glam::Vec3::ZERO,
+            animsmith_core::glam::Vec3::ONE,
+            animsmith_core::glam::Vec3::splat(2.0),
+        ];
+        let track = |times: Vec<f32>, values: Vec<animsmith_core::glam::Vec3>| Track {
+            bone: 0,
+            property: animsmith_core::Property::Translation,
+            interpolation: Interpolation::Linear,
+            times,
+            values: TrackValues::Vec3s(values),
+        };
+        let clip = |tracks: Vec<Track>| animsmith_core::Clip {
+            name: "walk".to_owned(),
+            duration_s: 1.0,
+            tracks,
+        };
+        let source = clip(vec![track(vec![0.0, authored_time, 1.0], values.clone())]);
+        let control_points = vec![
+            ContactTimeWarpControlPointV1::new(0.0, 0.0),
+            ContactTimeWarpControlPointV1::new(f64::from(two_below), 0.25),
+            ContactTimeWarpControlPointV1::new(1.0, 1.0),
+        ];
+        let operation = ContactTransformOperationV1::time_warp(1.0, control_points.clone());
+        let mapped = map_source_time(authored_time, 1.0, &control_points).unwrap();
+        assert!(mapped > 0.25, "the authored key maps past the knot");
+
+        let knot_value = match sample_track(&source.tracks[0], two_below) {
+            TrackSample::Vec3(value) => value,
+            TrackSample::Quat(_) => unreachable!("translation track"),
+        };
+        let both = clip(vec![track(
+            vec![0.0, 0.25, mapped, 1.0],
+            vec![values[0], knot_value, values[1], values[2]],
+        )]);
+        prove_clip_map(&source, &both, &operation).unwrap();
+
+        let coalesced = clip(vec![track(vec![0.0, 0.25, 1.0], values)]);
+        assert_eq!(
+            prove_clip_map(&source, &coalesced, &operation)
+                .unwrap_err()
+                .kind(),
+            FootCycleProofKind::ClipMap,
+            "two places apart are two instants, so one key is a key short"
         );
     }
 

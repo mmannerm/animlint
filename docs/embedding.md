@@ -339,10 +339,12 @@ interior map knots are sampled with AnimSmith's normal runtime semantics; STEP
 tracks move only their authored breakpoints. Unsafe nonconstant CUBICSPLINE
 tracks and binary32 time collisions refuse the whole candidate. A successful
 candidate still carries no emitted-artifact identity or reread proof.
-`animsmith_core::FootCycleClipWarpKnotV1` and `time_warp_knots_v1` expose the
-one rule that decides when a control point and an authored key are the same
-emitted instant and what the resulting key carries, so an embedder proving a
-candidate independently can ask that question instead of restating it.
+`animsmith_core::time_warp_rows_v1` and `FootCycleClipWarpKnotV1` expose which
+keys a track emits and in what order, and the one rule that decides when a
+control point and an authored key are the same emitted instant, so an embedder
+proving a candidate independently can ask those questions instead of restating
+them. The rows carry no output time and no value: the proof still computes
+every stored time and value itself.
 `animsmith_core::preflight_time_warp_clip_v1` runs the same validation and
 returns exact candidate name/track/key/value/storage-byte counts plus a
 conservative V1 inspection-work charge without allocating the candidate,

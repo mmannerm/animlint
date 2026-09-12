@@ -243,7 +243,9 @@ representable place apart, since that domain holds nothing between them — are
 one emitted key: it keeps the authored time and the authored value and carries
 the control point's own output, because the control point is the definition of
 the map at that instant. `FootCycleClipWarpKnotV1` is the one definition of that
-question, and the independent output proof rebuilds its expectation through it.
+question and `time_warp_rows_v1` the one answer to which keys a track emits and
+in what order; the independent output proof consumes those rows and still
+derives every expected time and value itself.
 The exception is a map knot that is the same instant as a source endpoint, `0`
 or the duration: the map's exact endpoint rows define the output there and a
 candidate retains those two instants as themselves, so such a knot contributes
