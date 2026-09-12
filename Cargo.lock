@@ -39,7 +39,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "animsmith"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "animsmith-engine",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-core"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "glam",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-engine"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "blake3",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-fbx"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "glam",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-gltf"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "animsmith-testkit",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-report"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "animsmith-engine",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "animsmith-testkit"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "animsmith-core",
  "base64",
