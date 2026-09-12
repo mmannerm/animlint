@@ -4044,8 +4044,11 @@ nothing is representable between them — are one emitted key at the authored
 time and value, carrying the control point's own output.
 `FootCycleClipWarpKnotV1` is the single definition of that question; the
 independent `ClipMap` proof in the CLI crate rebuilds its own expectation
-through the same definition rather than spelling coincidence a second way. Identity maps return a structurally identical admissible
-clip.
+through the same definition rather than spelling coincidence a second way. An
+interior point that is the same instant as an end of a track's authored span
+neither adds a key nor re-times the key there, because the map's exact
+endpoints define the output at those instants. Identity maps return a
+structurally identical admissible clip.
 
 CUBICSPLINE remains deliberately conservative: one-key tracks are retained;
 multi-key tracks are retained only when every stored key value is bit-exact

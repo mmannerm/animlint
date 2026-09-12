@@ -358,7 +358,10 @@ impl FootCycleClipWarpKnotV1 {
 /// knots: a STEP track maps its authored breakpoints and a retained cubic
 /// track is copied. The map's endpoints are exact, so only its interior points
 /// can contribute a knot, and only where the narrowed instant falls strictly
-/// inside the track's authored span. Knots are yielded in nondecreasing source
+/// inside the track's authored span without being the same instant as either
+/// end of it: the map's own `(0,0)` and `(1,1)` rows define the output at the
+/// span ends, so an interior point beside one of them neither adds a key nor
+/// re-times the authored key there. Knots are yielded in nondecreasing source
 /// order.
 pub fn time_warp_knots_v1<'a>(
     control_points: &'a [ContactTimeWarpControlPointV1],
@@ -382,7 +385,12 @@ pub fn time_warp_knots_v1<'a>(
             source_time: (point.input_time() * f64::from(duration)) as f32,
             output_time: (point.output_time() * f64::from(duration)) as f32,
         })
-        .filter(move |knot| knot.source_time > start_time && knot.source_time < end_time)
+        .filter(move |knot| {
+            knot.source_time > start_time
+                && knot.source_time < end_time
+                && !knot.coincides_with(start_time)
+                && !knot.coincides_with(end_time)
+        })
 }
 
 /// Apply one member's validated normalized source-to-output map to a cloned
@@ -1439,6 +1447,48 @@ mod tests {
                 .filter(|&&time| time == authored_time)
                 .count(),
             1
+        );
+    }
+
+    /// A control point that is the same instant as an end of the track's
+    /// authored span neither adds a key nor re-times the key there.
+    ///
+    /// The map's exact `(0,0)` and `(1,1)` rows define the output at the span
+    /// ends. Letting an interior point win there would silently end the
+    /// candidate track early, or start it late, without a refusal.
+    #[test]
+    fn interior_control_point_beside_a_span_end_leaves_it_alone() {
+        let above_start = f64::from(f32::from_bits(1));
+        let below_end = f64::from(f32::from_bits(1.0_f32.to_bits() - 1));
+        let source = clip(
+            1.0,
+            vec![vec_track(
+                Interpolation::Linear,
+                vec![0.0, 0.5, 1.0],
+                vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)],
+            )],
+        );
+        let plan = plan(
+            1.0,
+            &[(0.0, 0.0), (above_start, 0.2), (below_end, 0.8), (1.0, 1.0)],
+        );
+
+        let preflight = preflight_time_warp_clip_v1(&source, &plan).unwrap();
+        let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+
+        assert_eq!(preflight.candidate_keys(), 3);
+        assert_eq!(candidate.tracks[0].times.len(), 3);
+        assert_eq!(
+            candidate.tracks[0].times[0], 0.0,
+            "the candidate still starts where the source does"
+        );
+        assert_eq!(
+            candidate.tracks[0].times[2], 1.0,
+            "the candidate still ends where the source does"
+        );
+        assert_eq!(
+            vec_values(&candidate.tracks[0]),
+            &[Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)]
         );
     }
 
