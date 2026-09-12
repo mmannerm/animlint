@@ -1679,7 +1679,7 @@ mod tests {
         let narrow = |normalized: f64| (normalized * f64::from(narrowed_duration)) as f32;
 
         // Both coincidences the contract admits are present: reconstructing
-        // the first control point lands one binary32 place below its authored
+        // the first control point lands one binary32 place beside its authored
         // key, and the second reproduces its authored key exactly.
         assert_eq!(narrow(phase(4)).next_up(), times[4]);
         assert_eq!(narrow(phase(5)), times[5]);

@@ -33,10 +33,6 @@ impl FootCycleFixture {
     /// The stance windows stay at their normalized positions, so every stance
     /// boundary still lands on an authored frame, but the authored times are
     /// no longer exact binary32 fractions of the clip duration.
-    fn create_at_thirty_fps(frames: usize) -> Self {
-        Self::create_at(frames, 30.0)
-    }
-
     fn create_at(frames: usize, rate: f32) -> Self {
         Self::create_sampled(false, Sampling { frames, rate })
     }
@@ -842,7 +838,7 @@ fn forty_key_thirty_fps_set_publishes() {
 /// [`MEMBER_B_PHASE_OFFSET`] later, so its published clip must carry a
 /// different, still strictly increasing, set of times over the same interval.
 fn assert_thirty_fps_set_publishes(frames: usize) {
-    let fixture = FootCycleFixture::create_at_thirty_fps(frames);
+    let fixture = FootCycleFixture::create_at(frames, 30.0);
     let result = fixture.run();
     assert_success(&result);
     assert_eq!(count_files(&fixture.destination), 7);
@@ -860,6 +856,11 @@ fn assert_thirty_fps_set_publishes(frames: usize) {
         let tracks = published_track_times(&fs::read(member_root.join("artifact.glb")).unwrap());
         assert!(!tracks.is_empty());
         for times in &tracks {
+            assert_eq!(
+                times.len(),
+                frames,
+                "member {index} must publish one key per authored key"
+            );
             assert_eq!(times.first(), Some(&0.0));
             assert_eq!(times.last(), Some(&duration));
             assert!(
@@ -905,7 +906,7 @@ fn published_track_times(artifact: &[u8]) -> Vec<Vec<f32>> {
 #[test]
 fn every_key_count_from_eighteen_to_sixty_one_publishes() {
     for frames in 18..=61 {
-        let fixture = FootCycleFixture::create_at_thirty_fps(frames);
+        let fixture = FootCycleFixture::create_at(frames, 30.0);
         let result = fixture.run();
         assert_eq!(
             result.status.code(),
@@ -913,11 +914,16 @@ fn every_key_count_from_eighteen_to_sixty_one_publishes() {
             "{frames} keys: {}",
             String::from_utf8_lossy(&result.stdout),
         );
-        assert!(
-            fixture
-                .destination
-                .join("members/000001/artifact.glb")
-                .is_file()
+        let published = published_track_times(
+            &fs::read(fixture.destination.join("members/000001/artifact.glb")).unwrap(),
         );
+        assert!(!published.is_empty());
+        for times in &published {
+            assert_eq!(
+                times.len(),
+                frames,
+                "{frames} keys: the warped member publishes one key per authored key"
+            );
+        }
     }
 }

@@ -4047,11 +4047,21 @@ time and value, carrying the control point's own output.
 sequence a candidate stores. The rows carry no output time and no value, so the
 independent `ClipMap` proof in the CLI crate consumes them for the sequence
 while still computing every expected time and value itself, rather than
-spelling coincidence a second way. An
-interior point that is the same instant as a source endpoint — `0` or the
-duration — contributes nothing, because the exact endpoint rows define the
-output there and a candidate retains those two instants as themselves.
-Identity maps return a structurally identical admissible clip.
+spelling coincidence a second way. What the proof takes from core is which
+keys exist and in what order; what it still derives on its own is every
+authored key's mapped output through its own piecewise-linear evaluation,
+every stored value from the source clip, and the bitwise comparison of both
+against the artifact it rereads. That holds for
+every authored key the map has a control point for, including a track's own
+first and last: the span test is inclusive of one place on either side, so
+which side of a rounding step the reconstructed instant lands on does not
+decide the outcome. A key the knot is bit-equal to binds before a key it is
+merely beside, and coalescing only ever re-times an authored key — it never
+removes one. The single exception is an interior point that is the same
+instant as a source endpoint, `0` or the duration: it contributes nothing,
+because the exact endpoint rows define the output there and a candidate retains
+those two instants as themselves. Identity maps return a structurally identical
+admissible clip.
 
 CUBICSPLINE remains deliberately conservative: one-key tracks are retained;
 multi-key tracks are retained only when every stored key value is bit-exact
