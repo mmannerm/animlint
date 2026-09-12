@@ -34,7 +34,11 @@ impl FootCycleFixture {
     /// boundary still lands on an authored frame, but the authored times are
     /// no longer exact binary32 fractions of the clip duration.
     fn create_at_thirty_fps(frames: usize) -> Self {
-        Self::create_sampled(false, Sampling { frames, rate: 30.0 })
+        Self::create_at(frames, 30.0)
+    }
+
+    fn create_at(frames: usize, rate: f32) -> Self {
+        Self::create_sampled(false, Sampling { frames, rate })
     }
 
     fn create_sampled(cyclic_contacts: bool, sampling: Sampling) -> Self {
@@ -806,4 +810,114 @@ fn collection_transform_refuses_global_document_config_before_loading() {
             .unwrap()
             .contains("--config is not accepted by collection commands")
     );
+}
+
+/// The reported 18-key, 0.567 s locomotion set.
+///
+/// On the shipped builder this set refused at the transform stage with
+/// `TimeCollision { track_index: 0 }`, because member `b`'s interior control
+/// points narrow onto authored keys and the builder then demanded that
+/// recomputing the map through the authored time reproduce the control
+/// point's own narrowed output bit for bit.
+#[test]
+fn eighteen_key_thirty_fps_set_publishes() {
+    assert_thirty_fps_set_publishes(18);
+}
+
+/// The reported 40-key, 1.300 s locomotion set.
+///
+/// On the shipped builder this set took the other branch: the extra knot was
+/// emitted and the `ClipMap` proof then refused, because the proof decided
+/// coincidence by comparing a widened authored time against the unrounded
+/// binary64 product and so expected knots the builder had not emitted.
+#[test]
+fn forty_key_thirty_fps_set_publishes() {
+    assert_thirty_fps_set_publishes(40);
+}
+
+/// Publish one 30 fps locomotion set and check both members' emitted key times.
+///
+/// The reference member `a` carries the identity map, so its published clip
+/// keeps the authored times verbatim; member `b` runs the same gait
+/// [`MEMBER_B_PHASE_OFFSET`] later, so its published clip must carry a
+/// different, still strictly increasing, set of times over the same interval.
+fn assert_thirty_fps_set_publishes(frames: usize) {
+    let fixture = FootCycleFixture::create_at_thirty_fps(frames);
+    let result = fixture.run();
+    assert_success(&result);
+    assert_eq!(count_files(&fixture.destination), 7);
+    let aggregate: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(aggregate["resources"]["members"], 2);
+    assert_eq!(aggregate["members"][1]["member_id"], "com.example/b");
+
+    let authored = (0..frames)
+        .map(|index| index as f32 / 30.0)
+        .collect::<Vec<_>>();
+    let duration = authored[frames - 1];
+    for (index, identity) in [(0_usize, true), (1, false)] {
+        let member_root = fixture.destination.join(format!("members/{index:06}"));
+        assert!(member_root.join("evidence.json").is_file());
+        let tracks = published_track_times(&fs::read(member_root.join("artifact.glb")).unwrap());
+        assert!(!tracks.is_empty());
+        for times in &tracks {
+            assert_eq!(times.first(), Some(&0.0));
+            assert_eq!(times.last(), Some(&duration));
+            assert!(
+                times.windows(2).all(|pair| pair[0] < pair[1]),
+                "member {index} emitted non-increasing times {times:?}"
+            );
+            if identity {
+                assert_eq!(
+                    times, &authored,
+                    "the reference member's identity map copies its authored keys"
+                );
+            } else {
+                assert_ne!(
+                    times, &authored,
+                    "member b's non-identity time warp must move its keys"
+                );
+            }
+        }
+    }
+}
+
+/// Every published clip track's key times, in source order.
+fn published_track_times(artifact: &[u8]) -> Vec<Vec<f32>> {
+    let document = animsmith_gltf::load_source_bytes(Path::new("artifact.glb"), artifact)
+        .unwrap()
+        .into_document();
+    document
+        .clips
+        .iter()
+        .flat_map(|clip| clip.tracks.iter().map(|track| track.times.clone()))
+        .collect()
+}
+
+/// Every ordinary key count from the reported range publishes.
+///
+/// Stance boundaries come from authored frame indices, so each interior
+/// control point is an authored key; whether reconstructing its instant lands
+/// on that key or one binary32 place beside it varies with the key count, and
+/// before this contract it decided between a transform refusal, a `ClipMap`
+/// proof failure, and publication.
+#[test]
+fn every_key_count_from_eighteen_to_sixty_one_publishes() {
+    for rate in [30.0, 60.0] {
+        for frames in 18..=61 {
+            let fixture = FootCycleFixture::create_at(frames, rate);
+            let result = fixture.run();
+            assert_eq!(
+                result.status.code(),
+                Some(0),
+                "{frames} keys at {rate} fps: {}",
+                String::from_utf8_lossy(&result.stdout),
+            );
+            assert!(
+                fixture
+                    .destination
+                    .join("members/000001/artifact.glb")
+                    .is_file()
+            );
+        }
+    }
 }

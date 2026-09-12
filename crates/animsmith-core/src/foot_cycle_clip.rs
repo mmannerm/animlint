@@ -284,12 +284,105 @@ struct PreparedClipWarp<'a> {
     track_candidate_keys: Vec<usize>,
 }
 
+/// One key the candidate clip will store, in the emitted binary32 domain.
+///
+/// `authored_index` names the authored key whose stored value the emitted key
+/// carries; `None` means the key is sampled at `source_time` instead.
 #[derive(Debug, Clone, Copy)]
 struct CandidateKey {
-    source_exact: f64,
     source_time: f32,
     output_time: f32,
     authored_index: Option<usize>,
+}
+
+/// One interior V1 time-warp control point, resolved into the binary32 time
+/// domain a candidate clip stores.
+///
+/// A candidate clip stores binary32 key times, so whether a control point is
+/// the same instant as an authored key is decided in that domain and nowhere
+/// else: the control point's source instant is narrowed once into
+/// [`Self::source_time`], and it coincides with an authored key exactly when
+/// [`Self::coincides_with`] holds for that key's stored time.
+///
+/// A coincident control point and authored key are one instant, so they are
+/// emitted as one key at the authored key's stored time, carrying the authored
+/// key's own stored value at [`Self::output_time`], because the control point
+/// is the definition of the map at that instant. A control point that
+/// coincides with no authored key adds one key sampled at
+/// [`Self::source_time`]. Two emitted keys that share one binary32 source
+/// time, or whose output times do not strictly increase, are genuinely
+/// distinct instants that collapsed, and refuse.
+///
+/// [`time_warp_knots_v1`] resolves the knots one LINEAR track emits. An
+/// independent proof of a candidate clip reconstructs its own expectation, but
+/// it asks this one question rather than spelling coincidence a second way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FootCycleClipWarpKnotV1 {
+    source_time: f32,
+    output_time: f32,
+}
+
+impl FootCycleClipWarpKnotV1 {
+    /// The control point's source instant, narrowed once to the stored domain.
+    #[must_use]
+    pub const fn source_time(self) -> f32 {
+        self.source_time
+    }
+
+    /// The output time the emitted key carries.
+    #[must_use]
+    pub const fn output_time(self) -> f32 {
+        self.output_time
+    }
+
+    /// Whether the authored key stored at `authored_time` is this same instant.
+    ///
+    /// Binary32 is the domain the candidate stores, and two adjacent binary32
+    /// times have no representable instant between them, so a key at each is
+    /// two spellings of one instant rather than two instants. A normalized
+    /// control point reconstructed as `input_time * duration` lands on its
+    /// authored key or one place beside it, so the predicate admits both and
+    /// nothing wider: a key two places away is a different instant.
+    #[must_use]
+    pub fn coincides_with(self, authored_time: f32) -> bool {
+        self.source_time == authored_time
+            || self.source_time.next_up() == authored_time
+            || authored_time.next_up() == self.source_time
+    }
+}
+
+/// Resolve the knots one `track` emits for a validated V1 time warp.
+///
+/// `control_points` is the operation's validated strictly increasing map and
+/// `duration` the clip's narrowed binary32 duration. Only a LINEAR track emits
+/// knots: a STEP track maps its authored breakpoints and a retained cubic
+/// track is copied. The map's endpoints are exact, so only its interior points
+/// can contribute a knot, and only where the narrowed instant falls strictly
+/// inside the track's authored span. Knots are yielded in nondecreasing source
+/// order.
+pub fn time_warp_knots_v1<'a>(
+    control_points: &'a [ContactTimeWarpControlPointV1],
+    duration: f32,
+    track: &Track,
+) -> impl Iterator<Item = FootCycleClipWarpKnotV1> + 'a {
+    let start_time = track.start_time();
+    let end_time = track.end_time();
+    let interior = if track.interpolation == Interpolation::Linear {
+        control_points
+            .get(1..control_points.len().saturating_sub(1))
+            .unwrap_or_default()
+    } else {
+        &[]
+    };
+    interior
+        .iter()
+        .map(move |point| FootCycleClipWarpKnotV1 {
+            // Validated normalized control-point coordinates and the finite
+            // binary32 duration keep both products finite through narrowing.
+            source_time: (point.input_time() * f64::from(duration)) as f32,
+            output_time: (point.output_time() * f64::from(duration)) as f32,
+        })
+        .filter(move |knot| knot.source_time > start_time && knot.source_time < end_time)
 }
 
 /// Apply one member's validated normalized source-to-output map to a cloned
@@ -601,11 +694,17 @@ fn preflight(
     })
 }
 
-/// Visit every retained candidate key in source order, validating the exact
-/// f64-to-f32 source/output narrowing and output ordering before the caller
-/// can allocate or retain a candidate buffer.  Both preflight and the builder
-/// use this one traversal so a newly added refusal cannot silently become
-/// builder-only.
+/// Visit every retained candidate key in source order, validating the emitted
+/// binary32 source and output times before the caller can allocate or retain a
+/// candidate buffer. Both preflight and the builder use this one traversal so
+/// a newly added refusal cannot silently become builder-only.
+///
+/// A LINEAR track interleaves its authored keys with the knots
+/// [`time_warp_knots_v1`] resolves. A knot that coincides with the next
+/// authored key replaces that key's mapped output with its own, because the
+/// control point is the definition of the map at that instant; the pair is one
+/// emitted key carrying the authored value. Every other authored key keeps
+/// [`map_time`] of its own stored time.
 fn visit_warp_track_keys(
     track: &Track,
     track_index: usize,
@@ -620,81 +719,43 @@ fn visit_warp_track_keys(
         previous = Some(key);
         visit(key)
     };
+    let authored_key = |index: usize| {
+        let source_time = track.times[index];
+        CandidateKey {
+            source_time,
+            output_time: map_time(source_time, duration, points),
+            authored_index: Some(index),
+        }
+    };
 
-    if track.interpolation == Interpolation::Linear {
-        for point in points.iter().skip(1).take(points.len().saturating_sub(2)) {
-            let Some(extra) = linear_extra_knot(track, track_index, point, points, duration)?
-            else {
-                continue;
-            };
-            while authored_index < track.times.len()
-                && f64::from(track.times[authored_index]) < extra.source_exact
-            {
-                let source_time = track.times[authored_index];
-                visit_key(CandidateKey {
-                    source_exact: f64::from(source_time),
-                    source_time,
-                    output_time: map_time(source_time, duration, points),
-                    authored_index: Some(authored_index),
-                })?;
-                authored_index += 1;
-            }
-            visit_key(extra)?;
+    for knot in time_warp_knots_v1(points, duration, track) {
+        while authored_index < track.times.len()
+            && track.times[authored_index] < knot.source_time()
+            && !knot.coincides_with(track.times[authored_index])
+        {
+            visit_key(authored_key(authored_index))?;
+            authored_index += 1;
+        }
+        let coincident =
+            authored_index < track.times.len() && knot.coincides_with(track.times[authored_index]);
+        visit_key(CandidateKey {
+            source_time: if coincident {
+                track.times[authored_index]
+            } else {
+                knot.source_time()
+            },
+            output_time: knot.output_time(),
+            authored_index: coincident.then_some(authored_index),
+        })?;
+        if coincident {
+            authored_index += 1;
         }
     }
     while authored_index < track.times.len() {
-        let source_time = track.times[authored_index];
-        visit_key(CandidateKey {
-            source_exact: f64::from(source_time),
-            source_time,
-            output_time: map_time(source_time, duration, points),
-            authored_index: Some(authored_index),
-        })?;
+        visit_key(authored_key(authored_index))?;
         authored_index += 1;
     }
     Ok(())
-}
-
-/// Return a mapped control-point knot that is not already represented by an
-/// authored binary32 key. A coincidence in the track's binary32 time domain
-/// still validates that recomputing the map through the authored time yields
-/// the same binary32 output; otherwise construction would have two
-/// incompatible representations of one instant.
-fn linear_extra_knot(
-    track: &Track,
-    track_index: usize,
-    point: &ContactTimeWarpControlPointV1,
-    points: &[ContactTimeWarpControlPointV1],
-    duration: f32,
-) -> Result<Option<CandidateKey>, FootCycleClipWarpError> {
-    let source_exact = point.input_time() * f64::from(duration);
-    if source_exact <= f64::from(track.start_time()) || source_exact >= f64::from(track.end_time())
-    {
-        return Ok(None);
-    }
-    // Validated normalized control-point coordinates and the finite binary32
-    // duration keep both products finite through their binary32 narrowing.
-    let source_time = source_exact as f32;
-    let output_time = (point.output_time() * f64::from(duration)) as f32;
-    match track.times.binary_search_by(|authored| {
-        authored
-            .partial_cmp(&source_time)
-            .expect("validated track times are finite")
-    }) {
-        Ok(_) => {
-            let mapped_output = map_time(source_time, duration, points);
-            if mapped_output != output_time {
-                return Err(FootCycleClipWarpError::TimeCollision { track_index });
-            }
-            Ok(None)
-        }
-        Err(_) => Ok(Some(CandidateKey {
-            source_exact,
-            source_time,
-            output_time,
-            authored_index: None,
-        })),
-    }
 }
 
 fn validate_cubic(track: &Track, track_index: usize) -> Result<(), FootCycleClipWarpError> {
@@ -756,13 +817,19 @@ fn same_quat(left: Quat, right: Quat) -> bool {
         .all(|(left, right)| left.to_bits() == right.to_bits())
 }
 
+/// Refuse two emitted keys that are not one strictly increasing sequence in
+/// both binary32 domains.
+///
+/// Authored key times strictly increase and a coincident control point is
+/// coalesced into its authored key, so equal source times here are two
+/// genuinely distinct instants that narrowed together.
 fn validate_candidate_key(
     previous: Option<CandidateKey>,
     key: CandidateKey,
     track_index: usize,
 ) -> Result<(), FootCycleClipWarpError> {
     if let Some(previous) = previous {
-        if previous.source_time == key.source_time && previous.source_exact != key.source_exact {
+        if previous.source_time == key.source_time {
             return Err(FootCycleClipWarpError::SourceTimeCollision { track_index });
         }
         if previous.output_time >= key.output_time {
@@ -1375,8 +1442,74 @@ mod tests {
         );
     }
 
+    /// A control point one binary32 place from an authored key is that key.
+    ///
+    /// Nothing is representable between the two, so a candidate that stored a
+    /// key at each would carry two spellings of one instant. The pair is one
+    /// emitted key: the authored time, the authored value, and the control
+    /// point's own output.
+    /// Ordinary 30 fps locomotion sets coalesce every stance-boundary control
+    /// point, so the candidate keeps exactly the authored key count.
+    ///
+    /// Stance boundaries are authored frame indices, so the plan's normalized
+    /// input is `frame / (frames - 1)`. Reconstructing that instant as
+    /// `input * duration` reproduces the authored binary32 time for most key
+    /// counts in this range and lands one place below it for the rest; both
+    /// are the same instant, so neither adds a key.
     #[test]
-    fn adjacent_binary32_time_is_not_deduplicated() {
+    fn thirty_fps_stance_boundaries_coalesce_for_every_key_count() {
+        for frames in 18..=61_usize {
+            let last = frames - 1;
+            let duration = f64::from(last as f32 / 30.0);
+            let source = clip(
+                duration,
+                vec![vec_track(
+                    Interpolation::Linear,
+                    (0..frames).map(|key| key as f32 / 30.0).collect(),
+                    (0..frames).map(|key| Vec3::splat(key as f32)).collect(),
+                )],
+            );
+            let phase = |frame: usize| frame as f64 / last as f64;
+            let boundaries = [(4, 2), (6, 4), (last - 4, last - 6), (last - 2, last - 4)];
+            let mut points = vec![(0.0, 0.0)];
+            points.extend(
+                boundaries
+                    .iter()
+                    .map(|&(input, output)| (phase(input), phase(output))),
+            );
+            points.push((1.0, 1.0));
+            let plan = plan(duration, &points);
+
+            let preflight = preflight_time_warp_clip_v1(&source, &plan).unwrap();
+            let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+            let times = &candidate.tracks[0].times;
+
+            assert_eq!(
+                times.len(),
+                frames,
+                "{frames} keys: coalescing must not add a key"
+            );
+            assert_eq!(preflight.candidate_keys(), frames);
+            assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+            for (input, output) in boundaries {
+                assert_eq!(
+                    times[input],
+                    (phase(output) * duration) as f32,
+                    "{frames} keys: authored key {input} must carry its control point output"
+                );
+            }
+            assert_eq!(
+                vec_values(&candidate.tracks[0]),
+                &(0..frames)
+                    .map(|key| Vec3::splat(key as f32))
+                    .collect::<Vec<_>>(),
+                "{frames} keys: every emitted key keeps its authored value"
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_binary32_time_is_one_instant() {
         let authored_time = 0.5_f32;
         let adjacent_time = f32::from_bits(authored_time.to_bits() + 1);
         assert_ne!(authored_time, adjacent_time);
@@ -1397,18 +1530,14 @@ mod tests {
         let preflight = preflight_time_warp_clip_v1(&source, &plan).unwrap();
         let candidate = time_warp_clip_v1(&source, &plan).unwrap();
 
-        assert_eq!(preflight.candidate_keys(), 4);
+        assert_eq!(preflight.candidate_keys(), 3);
         assert_eq!(candidate.tracks[0].times.len(), preflight.candidate_keys());
         assert_eq!(
             candidate.tracks[0].values.len(),
             preflight.candidate_values()
         );
-        assert_eq!(candidate.tracks[0].times[2], 0.75);
-        assert_eq!(
-            TrackSample::Vec3(vec_values(&candidate.tracks[0])[2]),
-            sample_track(&source.tracks[0], adjacent_time)
-        );
-        assert_eq!(vec_values(&candidate.tracks[0]).len(), 4);
+        assert_eq!(candidate.tracks[0].times, vec![0.0, 0.75, 1.0]);
+        assert_eq!(vec_values(&candidate.tracks[0])[1], Vec3::ONE);
     }
 
     #[test]
@@ -1450,8 +1579,15 @@ mod tests {
         assert_eq!(vec_values(&candidate.tracks[0])[1], Vec3::ONE);
     }
 
+    /// A control point that narrows onto an authored key is that key, and the
+    /// emitted key carries the control point's own output.
+    ///
+    /// Before this contract the builder recomputed the map through the
+    /// authored time and refused the ordinary one-place difference with
+    /// `TimeCollision`, which is what stopped every 30 fps locomotion set from
+    /// publishing.
     #[test]
-    fn narrowed_authored_key_with_distinct_mapped_output_refuses() {
+    fn narrowed_authored_key_takes_the_control_point_output() {
         let duration = f64::from(17.0_f32 / 30.0);
         let authored_time = 0.1_f32;
         let control_phase = 3.0 / 17.0;
@@ -1469,17 +1605,29 @@ mod tests {
             duration,
             &[(0.0, 0.0), (control_phase, 4.0 / 17.0), (1.0, 1.0)],
         );
-
-        let expected = FootCycleClipWarpError::TimeCollision { track_index: 0 };
-        assert_eq!(
-            preflight_time_warp_clip_v1(&source, &plan),
-            Err(expected.clone())
+        let points = plan.operation().control_points().unwrap();
+        let output_time = (4.0 / 17.0 * duration) as f32;
+        assert_ne!(
+            map_time(authored_time, duration as f32, points),
+            output_time
         );
-        assert_error(time_warp_clip_v1(&source, &plan), expected);
+
+        let preflight = preflight_time_warp_clip_v1(&source, &plan).unwrap();
+        let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+
+        assert_eq!(preflight.candidate_keys(), 3);
+        assert_eq!(candidate.tracks[0].times.len(), 3);
+        assert_eq!(candidate.tracks[0].times[1], output_time);
+        assert_eq!(vec_values(&candidate.tracks[0])[1], Vec3::ONE);
     }
 
+    /// The coalesced key carries the control point's output, not the map
+    /// recomputed through the authored time.
+    ///
+    /// The two differ here by much more than a rounding step, so a builder
+    /// that kept the mapped authored output would fail this test.
     #[test]
-    fn authored_key_rounding_from_above_with_later_mapped_output_refuses() {
+    fn coalesced_key_takes_the_control_point_output_not_the_mapped_one() {
         let authored_time = 0.5_f32;
         let next_time = f32::from_bits(authored_time.to_bits() + 1);
         let control_time =
@@ -1499,16 +1647,19 @@ mod tests {
         let points = plan.operation().control_points().unwrap();
         assert!(map_time(authored_time, 1.0, points) < 0.75);
 
-        let expected = FootCycleClipWarpError::TimeCollision { track_index: 0 };
-        assert_eq!(
-            preflight_time_warp_clip_v1(&source, &plan),
-            Err(expected.clone())
-        );
-        assert_error(time_warp_clip_v1(&source, &plan), expected);
+        let preflight = preflight_time_warp_clip_v1(&source, &plan).unwrap();
+        let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+
+        assert_eq!(preflight.candidate_keys(), 3);
+        assert_eq!(candidate.tracks[0].times, vec![0.0, 0.75, 1.0]);
+        assert_eq!(vec_values(&candidate.tracks[0])[1], Vec3::ONE);
     }
 
+    /// Coalescing holds at the extremes of the binary32 time domain: a
+    /// multi-megasecond duration and a subnormal-scale output still emit one
+    /// strictly increasing key per instant.
     #[test]
-    fn coincident_source_knot_with_distinct_recomputed_output_refuses() {
+    fn coincident_source_knot_coalesces_at_extreme_magnitudes() {
         let duration = 12_794_115.0;
         let source = clip(
             duration,
@@ -1526,13 +1677,17 @@ mod tests {
                 (1.0, 1.0),
             ],
         );
-        let expected = FootCycleClipWarpError::TimeCollision { track_index: 0 };
+        let output_time = (7.523_163_845_262_64e-37 * duration) as f32;
 
+        let preflight = preflight_time_warp_clip_v1(&source, &plan).unwrap();
+        let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+
+        assert_eq!(preflight.candidate_keys(), 3);
         assert_eq!(
-            preflight_time_warp_clip_v1(&source, &plan),
-            Err(expected.clone())
+            candidate.tracks[0].times,
+            vec![0.0, output_time, duration as f32]
         );
-        assert_error(time_warp_clip_v1(&source, &plan), expected);
+        assert_eq!(vec_values(&candidate.tracks[0])[1], Vec3::ONE);
     }
 
     #[test]
@@ -1781,6 +1936,30 @@ mod tests {
             &linear,
             &source_collision,
             FootCycleClipWarpError::SourceTimeCollision { track_index: 0 },
+        );
+
+        // The refusal names the offending track, not the first one.
+        let mut second = vec_track(
+            Interpolation::Linear,
+            vec![0.0, 1.0],
+            vec![Vec3::ZERO, Vec3::ONE],
+        );
+        second.bone += 1;
+        let after_a_step_track = clip(
+            1.0,
+            vec![
+                vec_track(
+                    Interpolation::Step,
+                    vec![0.0, 1.0],
+                    vec![Vec3::ZERO, Vec3::ONE],
+                ),
+                second,
+            ],
+        );
+        assert_preflight_and_candidate_error(
+            &after_a_step_track,
+            &source_collision,
+            FootCycleClipWarpError::SourceTimeCollision { track_index: 1 },
         );
 
         let step = clip(

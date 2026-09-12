@@ -237,10 +237,15 @@ selected, validated skeleton. Fixed aggregate name-byte, track,
 authored/generated key/value, and work caps refuse before candidate allocation;
 candidate storage has a derived public upper bound from those admitted rows.
 LINEAR tracks map every authored key and insert interior map-knot
-samples; STEP tracks map only authored breakpoints. A map knot that narrows to
-an authored binary32 track time collapses deterministically when its mapped
-output agrees. Distinct generated source instants and distinct output instants
-that collide after binary32 narrowing refuse. One-key CUBICSPLINE tracks are
+samples; STEP tracks map only authored breakpoints. A map knot and an authored
+key that are the same instant in the emitted binary32 domain — equal, or one
+representable place apart, since that domain holds nothing between them — are
+one emitted key: it keeps the authored time and the authored value and carries
+the control point's own output, because the control point is the definition of
+the map at that instant. `FootCycleClipWarpKnotV1` is the one definition of that
+question, and the independent output proof rebuilds its expectation through it.
+Distinct generated source instants and distinct output instants that collide
+after binary32 narrowing refuse. One-key CUBICSPLINE tracks are
 retained, and multi-key cubic tracks are retained only for bit-exact constant
 values with zero tangents. The value caps are the shape-derived
 three-values-per-cubic-key maxima, so malformed N+1 storage refuses at shape or
