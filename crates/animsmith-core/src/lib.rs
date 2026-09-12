@@ -305,7 +305,8 @@ pub use foot_cycle_clip::{
     FOOT_CYCLE_CLIP_V1_MAX_INPUT_KEYS, FOOT_CYCLE_CLIP_V1_MAX_INPUT_VALUES,
     FOOT_CYCLE_CLIP_V1_MAX_NAME_BYTES, FOOT_CYCLE_CLIP_V1_MAX_TRACKS, FOOT_CYCLE_CLIP_V1_MAX_WORK,
     FootCycleClipPreflightV1, FootCycleClipResourceV1, FootCycleClipWarpError,
-    FootCycleCubicSplineRefusalV1, preflight_time_warp_clip_v1, time_warp_clip_v1,
+    FootCycleClipWarpKnotV1, FootCycleClipWarpRowV1, FootCycleCubicSplineRefusalV1,
+    preflight_time_warp_clip_v1, time_warp_clip_v1, time_warp_rows_v1,
 };
 /// Re-export of the exact `glam` version used by animsmith's public math
 /// types, so embedders can construct [`Transform`] values without a

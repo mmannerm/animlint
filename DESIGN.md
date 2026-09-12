@@ -4038,9 +4038,31 @@ all mapped authored keys and add interior map-knot samples with the existing
 runtime sampling semantics, while STEP tracks map only authored breakpoints.
 Binary64 calculations may narrow to finite binary32 track times, but distinct
 source or output instants that collide after narrowing refuse rather than being
-silently collapsed. Exact coincident authored/map-knot rows deduplicate
-deterministically. Identity maps return a structurally identical admissible
-clip.
+silently collapsed. A map knot and an authored key that are the same instant in
+that emitted binary32 domain — equal, or one representable place apart, since
+nothing is representable between them — are one emitted key at the authored
+time and value, carrying the control point's own output.
+`FootCycleClipWarpKnotV1` is the single definition of that question, and
+`time_warp_rows_v1` merges a track's authored keys with its knots into the key
+sequence a candidate stores. A knot-bearing row carries that knot — its
+control-point index and that point's two narrowed times — and no stored value,
+so the independent `ClipMap` proof in the CLI crate consumes the rows for the
+sequence and reads only the index, narrowing the control point itself rather
+than spelling coincidence a second way. What the proof takes from core is which
+keys exist and in what order; every number is its own, including a knot's two
+times, which it narrows again from the control point the row names rather than
+reading the producer's resolution of them. A resolution that drifted by one
+binary32 place is then a mismatch rather than a shared assumption. That holds
+for every authored key the map has a control point for, including a track's
+own first and last: the span test is inclusive of one place on either side, so
+which side of a rounding step the reconstructed instant lands on does not
+decide the outcome. A key the knot is bit-equal to binds before a key it is
+merely beside, and coalescing only ever re-times an authored key — it never
+removes one. The single exception is an interior point that is the same
+instant as a source endpoint, `0` or the duration: it contributes nothing,
+because the exact endpoint rows define the output there and a candidate retains
+those two instants as themselves. Identity maps return a structurally identical
+admissible clip.
 
 CUBICSPLINE remains deliberately conservative: one-key tracks are retained;
 multi-key tracks are retained only when every stored key value is bit-exact

@@ -237,12 +237,31 @@ selected, validated skeleton. Fixed aggregate name-byte, track,
 authored/generated key/value, and work caps refuse before candidate allocation;
 candidate storage has a derived public upper bound from those admitted rows.
 LINEAR tracks map every authored key and insert interior map-knot
-samples; STEP tracks map only authored breakpoints. A map knot that narrows to
-an authored binary32 track time collapses deterministically when its mapped
-output agrees. Distinct generated source instants and distinct output instants
-that collide after binary32 narrowing refuse. One-key CUBICSPLINE tracks are
-retained, and multi-key cubic tracks are retained only for bit-exact constant
-values with zero tangents. The value caps are the shape-derived
+samples; STEP tracks map only authored breakpoints. A map knot and an authored
+key that are the same instant in the emitted binary32 domain — equal, or one
+representable place apart, since that domain holds nothing between them — are
+one emitted key: it keeps the authored time and the authored value and carries
+the control point's own output, because the control point is the definition of
+the map at that instant. `FootCycleClipWarpKnotV1` is the one definition of that
+question and `time_warp_rows_v1` the one answer to which keys a track emits and
+in what order; the independent output proof consumes those rows for the
+sequence alone and derives every expected time and value itself, a knot's own
+times included.
+That holds for a track's own first and last authored key too: the span test is
+inclusive of one place on either side, so which side of a rounding step the
+reconstructed instant lands on does not decide whether that key takes its
+control point's output. Where two authored keys are one place apart, a knot
+binds to the key it is bit-equal to rather than the key it is merely beside,
+and both keys are retained. The one exception is a map knot that is the same
+instant as a source endpoint, `0` or the duration: the map's exact endpoint
+rows define the output there and a candidate retains those two instants as
+themselves, so such a knot contributes nothing. Two knots that name one instant
+refuse: each is compared against both instants of the knot before it, its own
+resolved source time and the instant it named, because a knot that coalesced
+into an authored key answers to a time one place from its own. Distinct output
+instants that collide after binary32 narrowing refuse too. One-key CUBICSPLINE
+tracks are retained, and multi-key cubic tracks are retained only for bit-exact
+constant values with zero tangents. The value caps are the shape-derived
 three-values-per-cubic-key maxima, so malformed N+1 storage refuses at shape or
 key bounds before it can become a separate valid value-only case.
 
