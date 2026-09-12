@@ -773,10 +773,12 @@ fn prove_clip_map(
         }
         // Which keys the candidate stores, and in what order, is the
         // producer's contract rather than this proof's opinion, so the rows
-        // come from the one shared answer (`FootCycleClipWarpRowV1`). What the
-        // proof keeps to itself is every value in the expectation: each output
-        // time through its own `map_source_time`, each stored value from the
-        // source clip, compared bit for bit against the reread candidate.
+        // come from the one shared answer (`FootCycleClipWarpRowV1`). Every
+        // number in the expectation is this proof's own: an authored key's
+        // output through its own `map_source_time`, a knot's two times
+        // narrowed here from the control point the row names, each stored
+        // value taken from the source clip — all compared bit for bit against
+        // the reread candidate.
         let mut expected = Vec::with_capacity(source.times.len() + control_points.len());
         for row in time_warp_rows_v1(control_points, duration, source) {
             let expectation = match row {
@@ -785,10 +787,18 @@ fn prove_clip_map(
                     key_sample(source, key)?,
                 ),
                 FootCycleClipWarpRowV1::Knot(knot) => {
-                    (knot.output_time(), sample_track(source, knot.source_time()))
+                    let point = warp_control_point(control_points, knot.control_point_index())?;
+                    (
+                        narrow_normalized(point.output_time(), duration),
+                        sample_track(source, narrow_normalized(point.input_time(), duration)),
+                    )
                 }
                 FootCycleClipWarpRowV1::Coalesced(key, knot) => {
-                    (knot.output_time(), key_sample(source, key)?)
+                    let point = warp_control_point(control_points, knot.control_point_index())?;
+                    (
+                        narrow_normalized(point.output_time(), duration),
+                        key_sample(source, key)?,
+                    )
                 }
             };
             expected.push(expectation);
@@ -810,6 +820,25 @@ fn prove_clip_map(
         }
     }
     Ok(())
+}
+
+/// The control point a knot row names, refusing an index the map does not have.
+fn warp_control_point(
+    points: &[ContactTimeWarpControlPointV1],
+    index: usize,
+) -> Result<ContactTimeWarpControlPointV1, FootCycleProofError> {
+    points
+        .get(index)
+        .copied()
+        .ok_or_else(|| FootCycleProofError::new(FootCycleProofKind::ClipMap))
+}
+
+/// One normalized time in the binary32 domain a candidate stores.
+///
+/// This proof narrows it here rather than reading the producer's resolution,
+/// so a candidate built from a different narrowing is a mismatch.
+fn narrow_normalized(normalized: f64, duration: f32) -> f32 {
+    (normalized * f64::from(duration)) as f32
 }
 
 fn map_source_time(
@@ -1739,6 +1768,83 @@ mod tests {
             FootCycleProofKind::ClipMap,
             "the coalesced key carries the control point output, not the mapped one"
         );
+    }
+
+    /// The proof narrows a knot's stored time itself.
+    ///
+    /// A knot row names a control point; the time the candidate must store for
+    /// it is that point's normalized output times the narrowed duration,
+    /// narrowed once — arithmetic this proof does rather than reads, so a
+    /// producer that resolved the same knot one binary32 place away is a
+    /// mismatch instead of a shared assumption. Both row kinds that carry a
+    /// control point's output are pinned, in both directions.
+    #[test]
+    fn clip_map_proof_narrows_a_knot_output_time_itself() {
+        let coincident = 0.25_f32;
+        let knot_time = 0.375_f32;
+        let values = vec![
+            animsmith_core::glam::Vec3::ZERO,
+            animsmith_core::glam::Vec3::ONE,
+            animsmith_core::glam::Vec3::splat(2.0),
+            animsmith_core::glam::Vec3::splat(3.0),
+        ];
+        let track = |times: Vec<f32>, values: Vec<animsmith_core::glam::Vec3>| Track {
+            bone: 0,
+            property: animsmith_core::Property::Translation,
+            interpolation: Interpolation::Linear,
+            times,
+            values: TrackValues::Vec3s(values),
+        };
+        let clip = |tracks: Vec<Track>| animsmith_core::Clip {
+            name: "walk".to_owned(),
+            duration_s: 1.0,
+            tracks,
+        };
+        let source = clip(vec![track(vec![0.0, coincident, 0.5, 1.0], values.clone())]);
+        let control_points = vec![
+            ContactTimeWarpControlPointV1::new(0.0, 0.0),
+            ContactTimeWarpControlPointV1::new(f64::from(coincident), 0.1),
+            ContactTimeWarpControlPointV1::new(f64::from(knot_time), 0.6),
+            ContactTimeWarpControlPointV1::new(1.0, 1.0),
+        ];
+        let operation = ContactTransformOperationV1::time_warp(1.0, control_points.clone());
+
+        // The two stored times this proof must derive, narrowed here from the
+        // control points rather than taken from any resolution of them.
+        let coalesced_output = narrow_normalized(control_points[1].output_time(), 1.0);
+        let knot_output = narrow_normalized(control_points[2].output_time(), 1.0);
+        let knot_value = match sample_track(&source.tracks[0], knot_time) {
+            TrackSample::Vec3(value) => value,
+            TrackSample::Quat(_) => unreachable!("translation track"),
+        };
+        let mapped = map_source_time(0.5, 1.0, &control_points).unwrap();
+        assert!(knot_output < mapped, "the knot precedes the authored key");
+        let times = vec![0.0, coalesced_output, knot_output, mapped, 1.0];
+        let stored = vec![values[0], values[1], knot_value, values[2], values[3]];
+        prove_clip_map(
+            &source,
+            &clip(vec![track(times.clone(), stored.clone())]),
+            &operation,
+        )
+        .unwrap();
+
+        for index in [1_usize, 2] {
+            for shifted in [times[index].next_up(), times[index].next_down()] {
+                let mut mutated = times.clone();
+                mutated[index] = shifted;
+                assert_eq!(
+                    prove_clip_map(
+                        &source,
+                        &clip(vec![track(mutated, stored.clone())]),
+                        &operation
+                    )
+                    .unwrap_err()
+                    .kind(),
+                    FootCycleProofKind::ClipMap,
+                    "key {index} stored one place from the control point's own output"
+                );
+            }
+        }
     }
 
     /// The far edge of the same contract, from the proof's side: a control

@@ -285,14 +285,19 @@ struct PreparedClipWarp<'a> {
 }
 
 /// One key the candidate clip will store, in the emitted binary32 domain.
-///
-/// `authored_index` names the authored key whose stored value the emitted key
-/// carries; `None` means the key is sampled at `source_time` instead.
 #[derive(Debug, Clone, Copy)]
 struct CandidateKey {
-    source_time: f32,
     output_time: f32,
-    authored_index: Option<usize>,
+    value: CandidateValue,
+}
+
+/// Where an emitted key's stored value comes from.
+#[derive(Debug, Clone, Copy)]
+enum CandidateValue {
+    /// The authored key at this index, copied verbatim.
+    Authored(usize),
+    /// The track sampled at this instant, for a key no authored key is.
+    Sampled(f32),
 }
 
 /// One interior V1 time-warp control point, resolved into the binary32 time
@@ -315,16 +320,32 @@ struct CandidateKey {
 /// distinct instants that collapsed, and refuse.
 ///
 /// [`time_warp_rows_v1`] resolves the knots one LINEAR track emits and merges
-/// them with its authored keys. An independent proof of a candidate clip
-/// computes its own expected times and values, but it asks this one question
-/// rather than spelling coincidence a second way.
+/// them with its authored keys. An independent proof of a candidate clip asks
+/// this one question rather than spelling coincidence a second way, but it
+/// derives every stored number itself: the two times here are this resolution,
+/// not an authority, so a proof narrows them again from the control point
+/// [`Self::control_point_index`] names. A mistake in one resolution is then a
+/// mismatch rather than a shared assumption.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FootCycleClipWarpKnotV1 {
+    control_point_index: usize,
     source_time: f32,
     output_time: f32,
 }
 
 impl FootCycleClipWarpKnotV1 {
+    /// Index of the control point this knot resolves, in the operation's own
+    /// map.
+    ///
+    /// This is what a consumer that must not trust the resolution reads: both
+    /// times above are `input_time`/`output_time` of that point multiplied by
+    /// the narrowed binary32 duration and narrowed once, and a proof of a
+    /// candidate does that arithmetic itself.
+    #[must_use]
+    pub const fn control_point_index(self) -> usize {
+        self.control_point_index
+    }
+
     /// The control point's source instant, narrowed once to the stored domain.
     #[must_use]
     pub const fn source_time(self) -> f32 {
@@ -407,7 +428,10 @@ fn time_warp_knots_v1<'a>(
     };
     interior
         .iter()
-        .map(move |point| FootCycleClipWarpKnotV1 {
+        .enumerate()
+        .map(move |(offset, point)| FootCycleClipWarpKnotV1 {
+            // The interior slice starts at the map's second row.
+            control_point_index: offset + 1,
             // Validated normalized control-point coordinates and the finite
             // binary32 duration keep both products finite through narrowing.
             source_time: (point.input_time() * f64::from(duration)) as f32,
@@ -856,37 +880,33 @@ fn visit_warp_track_keys(
     mut visit: impl FnMut(CandidateKey) -> Result<(), FootCycleClipWarpError>,
 ) -> Result<(), FootCycleClipWarpError> {
     let mut previous = None;
-    let mut previous_knot: Option<FootCycleClipWarpKnotV1> = None;
+    let mut previous_instant: Option<f32> = None;
     for row in time_warp_rows_v1(points, duration, track) {
-        let knot = match row {
+        let named = match row {
             FootCycleClipWarpRowV1::Authored(_) => None,
-            FootCycleClipWarpRowV1::Knot(knot) | FootCycleClipWarpRowV1::Coalesced(_, knot) => {
-                Some(knot)
-            }
+            FootCycleClipWarpRowV1::Knot(knot) => Some((knot, knot.source_time())),
+            FootCycleClipWarpRowV1::Coalesced(index, knot) => Some((knot, track.times[index])),
         };
-        if let (Some(previous), Some(knot)) = (previous_knot, knot)
-            && knot.coincides_with(previous.source_time())
+        if let (Some(previous), Some((knot, _))) = (previous_instant, named)
+            && knot.coincides_with(previous)
         {
             return Err(FootCycleClipWarpError::SourceTimeCollision { track_index });
         }
-        if knot.is_some() {
-            previous_knot = knot;
+        if let Some((_, instant)) = named {
+            previous_instant = Some(instant);
         }
         let key = match row {
             FootCycleClipWarpRowV1::Authored(index) => CandidateKey {
-                source_time: track.times[index],
                 output_time: map_time(track.times[index], duration, points),
-                authored_index: Some(index),
+                value: CandidateValue::Authored(index),
             },
             FootCycleClipWarpRowV1::Knot(knot) => CandidateKey {
-                source_time: knot.source_time(),
                 output_time: knot.output_time(),
-                authored_index: None,
+                value: CandidateValue::Sampled(knot.source_time()),
             },
             FootCycleClipWarpRowV1::Coalesced(index, knot) => CandidateKey {
-                source_time: track.times[index],
                 output_time: knot.output_time(),
-                authored_index: Some(index),
+                value: CandidateValue::Authored(index),
             },
         };
         validate_candidate_key(previous, key, track_index)?;
@@ -980,21 +1000,14 @@ fn validate_candidate_key(
 /// Quaternion keys have a finite positive squared length before this point;
 /// normalizing them and slerping two finite unit quaternions also stays finite.
 fn candidate_value(track: &Track, key: CandidateKey) -> TrackSample {
-    match &track.values {
-        TrackValues::Vec3s(authored) => TrackSample::Vec3(key.authored_index.map_or_else(
-            || match sample_track(track, key.source_time) {
-                TrackSample::Vec3(value) => value,
-                TrackSample::Quat(_) => unreachable!("validated Vec3 track"),
-            },
-            |index| authored[index],
-        )),
-        TrackValues::Quats(authored) => TrackSample::Quat(key.authored_index.map_or_else(
-            || match sample_track(track, key.source_time) {
-                TrackSample::Quat(value) => value,
-                TrackSample::Vec3(_) => unreachable!("validated quaternion track"),
-            },
-            |index| authored[index],
-        )),
+    match (&track.values, key.value) {
+        (TrackValues::Vec3s(authored), CandidateValue::Authored(index)) => {
+            TrackSample::Vec3(authored[index])
+        }
+        (TrackValues::Quats(authored), CandidateValue::Authored(index)) => {
+            TrackSample::Quat(authored[index])
+        }
+        (_, CandidateValue::Sampled(source_time)) => sample_track(track, source_time),
     }
 }
 
@@ -1618,14 +1631,14 @@ mod tests {
         );
     }
 
-    /// The public knot resolver, exercised directly: it is what an embedder
-    /// proving a candidate independently is told to call.
+    /// The public row sequence, exercised directly: it is what an embedder
+    /// proving a candidate independently is told to consume.
     ///
-    /// Only a LINEAR track emits knots; a knot that narrows onto `0` or the
-    /// duration is dropped; the rest arrive in nondecreasing source order with
-    /// both times narrowed once into the emitted domain.
+    /// Rows arrive in source order and classify every emitted key; a knot that
+    /// narrows onto `0` or the duration is dropped; and a track that emits no
+    /// knots at all yields one `Authored` row per authored key.
     #[test]
-    fn public_knot_resolver_yields_the_emitted_domain_in_source_order() {
+    fn public_row_sequence_classifies_and_orders_the_emitted_keys() {
         let duration = 2.0_f32;
         let track = vec_track(
             Interpolation::Linear,
@@ -1638,8 +1651,10 @@ mod tests {
                 (0.0, 0.0),
                 // Narrows to 0.0, below the smallest binary32 subnormal.
                 (1e-46, 0.05),
+                // Narrows onto the authored key at 0.5.
                 (0.25, 0.2),
-                (0.5, 0.6),
+                // Narrows between two authored keys.
+                (0.375, 0.5),
                 // Narrows to the duration: binary32 has nothing between.
                 (1.0 - 1e-16, 0.95),
                 (1.0, 1.0),
@@ -1652,190 +1667,92 @@ mod tests {
         assert_eq!((1e-46 * f64::from(duration)) as f32, 0.0);
         assert_eq!(((1.0 - 1e-16) * f64::from(duration)) as f32, duration);
 
-        let knots = time_warp_knots_v1(points, duration, &track).collect::<Vec<_>>();
+        let rows = time_warp_rows_v1(points, duration, &track).collect::<Vec<_>>();
 
+        let classified = rows
+            .iter()
+            .map(|row| match row {
+                FootCycleClipWarpRowV1::Authored(index) => ("authored", *index, f32::NAN),
+                FootCycleClipWarpRowV1::Knot(knot) => ("knot", usize::MAX, knot.source_time()),
+                FootCycleClipWarpRowV1::Coalesced(index, knot) => {
+                    ("coalesced", *index, knot.source_time())
+                }
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            knots
+            classified
                 .iter()
-                .map(|knot| knot.source_time())
+                .map(|(kind, index, _)| (*kind, *index))
                 .collect::<Vec<_>>(),
-            vec![0.5, 1.0],
+            vec![
+                ("authored", 0),
+                ("coalesced", 1),
+                ("knot", usize::MAX),
+                ("authored", 2),
+                ("authored", 3),
+                ("authored", 4),
+            ],
             "the two knots at the source endpoints are dropped"
         );
         assert_eq!(
-            knots
-                .iter()
-                .map(|knot| knot.output_time())
-                .collect::<Vec<_>>(),
-            vec![0.4, 1.2]
+            classified[1].2, 0.5,
+            "the coalesced knot is the authored key"
         );
-        assert!(knots[0].coincides_with(0.5));
-        assert!(!knots[0].coincides_with(1.0));
+        assert_eq!(classified[2].2, 0.75);
+        let coalesced_knot = match rows[1] {
+            FootCycleClipWarpRowV1::Coalesced(_, knot) => knot,
+            _ => panic!("row 1 is coalesced"),
+        };
+        assert_eq!(coalesced_knot.control_point_index(), 2);
+        assert_eq!(coalesced_knot.output_time(), 0.4);
 
         for interpolation in [Interpolation::Step, Interpolation::CubicSpline] {
             let mut other = track.clone();
             other.interpolation = interpolation;
             assert_eq!(
-                time_warp_knots_v1(points, duration, &other).count(),
-                0,
-                "{interpolation:?} tracks emit no knots"
+                time_warp_rows_v1(points, duration, &other).collect::<Vec<_>>(),
+                (0..other.times.len())
+                    .map(FootCycleClipWarpRowV1::Authored)
+                    .collect::<Vec<_>>(),
+                "{interpolation:?} tracks emit only authored rows"
             );
         }
     }
 
-    /// Two control points the emitted domain cannot tell apart refuse whether
-    /// or not an authored key sits beside them.
+    /// Two knots that name one instant through the same authored key refuse.
     ///
-    /// The pair is one instant there, so the plan names a breakpoint twice.
-    /// Deciding that between the knots rather than between the emitted keys is
-    /// what keeps the refusal independent of the source's own key times: with
-    /// a key beside the pair the first knot would otherwise coalesce into it
-    /// and the second would become an ordinary key one place away.
+    /// Each is the same instant as the key, so only one can coalesce into it
+    /// and the other would publish as its own key one place away — the plan
+    /// naming one breakpoint twice, which is the collision the emitted domain
+    /// cannot represent.
     #[test]
-    fn two_control_points_that_are_one_instant_refuse_beside_a_key_or_not() {
-        let shared = 0.5_f32;
-        let values = vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)];
-        for beside_a_key in [true, false] {
-            let middle = if beside_a_key { shared } else { 0.25 };
-            for (label, second) in [
-                ("the same instant", f64::from(shared)),
-                ("adjacent instants", f64::from(shared.next_up())),
-            ] {
-                let source = clip(
-                    1.0,
-                    vec![vec_track(
-                        Interpolation::Linear,
-                        vec![0.0, middle, 1.0],
-                        values.clone(),
-                    )],
-                );
-                // A nudge too small to survive narrowing: both control points
-                // resolve into the pair this test is about.
-                let plan = plan(
-                    1.0,
-                    &[
-                        (0.0, 0.0),
-                        (f64::from(shared), 0.4),
-                        (second + f64::EPSILON, 0.6),
-                        (1.0, 1.0),
-                    ],
-                );
-                let points = plan.operation().control_points().unwrap();
-                let knots = time_warp_knots_v1(points, 1.0, &source.tracks[0]).collect::<Vec<_>>();
-                assert_eq!(knots.len(), 2, "{label}, beside a key: {beside_a_key}");
-                assert!(knots[1].coincides_with(knots[0].source_time()));
-
-                assert_preflight_and_candidate_error(
-                    &source,
-                    &plan,
-                    FootCycleClipWarpError::SourceTimeCollision { track_index: 0 },
-                );
-            }
-        }
-    }
-
-    /// Two authored keys one binary32 place apart stay two instants, and a
-    /// knot binds to the key it *is*, not to the key it is merely beside.
-    ///
-    /// Coalescing re-times an authored key; it never removes one. A rule that
-    /// bound greedily to the earlier key would give the control point's output
-    /// to the wrong one of the pair, and one that consumed every key it is
-    /// beside would delete the neighbour.
-    #[test]
-    fn a_knot_binds_to_the_authored_key_it_equals_not_the_one_beside_it() {
-        let first = 0.5_f32;
-        let second = first.next_up();
-        assert_ne!(first, second);
-
-        for bound_index in [1_usize, 2] {
-            let bound = if bound_index == 1 { first } else { second };
+    fn two_knots_straddling_one_authored_key_refuse() {
+        for (times, straddled) in [
+            (vec![0.0, 0.4, 0.6, 1.0], 0.4_f32),
+            (vec![0.25, 0.5, 0.75], 0.75_f32),
+        ] {
+            let below = f64::from(f32::from_bits(straddled.to_bits() - 1));
+            let above = f64::from(f32::from_bits(straddled.to_bits() + 1));
             let source = clip(
                 1.0,
                 vec![vec_track(
                     Interpolation::Linear,
-                    vec![0.0, first, second, 1.0],
-                    vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0), Vec3::splat(3.0)],
+                    times.clone(),
+                    vec![Vec3::ZERO; times.len()],
                 )],
             );
-            let plan = plan(1.0, &[(0.0, 0.0), (f64::from(bound), 0.25), (1.0, 1.0)]);
-            let candidate = time_warp_clip_v1(&source, &plan).unwrap();
-            let times = &candidate.tracks[0].times;
+            let plan = plan(1.0, &[(0.0, 0.0), (below, 0.2), (above, 0.5), (1.0, 1.0)]);
+            let points = plan.operation().control_points().unwrap();
+            let knots = time_warp_rows_v1(points, 1.0, &source.tracks[0])
+                .filter(|row| !matches!(row, FootCycleClipWarpRowV1::Authored(_)))
+                .count();
+            assert_eq!(knots, 2, "both knots are the same instant as {straddled}");
 
-            assert_eq!(times.len(), 4, "both authored keys must be retained");
-            assert_eq!(
-                times[bound_index], 0.25,
-                "the key the knot equals takes the control point's output"
+            assert_preflight_and_candidate_error(
+                &source,
+                &plan,
+                FootCycleClipWarpError::SourceTimeCollision { track_index: 0 },
             );
-            let other = if bound_index == 1 { 2 } else { 1 };
-            assert_ne!(
-                times[other], 0.25,
-                "the key beside it keeps its own mapped output"
-            );
-            assert_eq!(
-                vec_values(&candidate.tracks[0]),
-                &[Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0), Vec3::splat(3.0)]
-            );
-        }
-    }
-
-    /// A knot beside a track's own span end coalesces from either side.
-    ///
-    /// The span test is inclusive, so all six placements around the first and
-    /// last authored key — one place below, exactly on it, one place above —
-    /// give that key its control point's output. Which side of a rounding step
-    /// the reconstructed instant lands on is exactly what must not decide the
-    /// outcome.
-    #[test]
-    fn a_knot_beside_a_track_span_end_coalesces_from_either_side() {
-        for (key, emitted_index, before, after, outputs) in [
-            (
-                0.25_f32,
-                0_usize,
-                0.249_999_8,
-                0.250_000_2,
-                [0.07, 0.1, 0.13],
-            ),
-            (0.75, 3, 0.749_999_8, 0.750_000_2, [0.87, 0.9, 0.93]),
-        ] {
-            for offset in [-1_i32, 0, 1] {
-                let control_time = f32::from_bits(key.to_bits().wrapping_add_signed(offset));
-                let source = clip(
-                    1.0,
-                    vec![vec_track(
-                        Interpolation::Linear,
-                        vec![0.25, 0.5, 0.75],
-                        vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)],
-                    )],
-                );
-                let plan = plan(
-                    1.0,
-                    &[
-                        (0.0, 0.0),
-                        (before, outputs[0]),
-                        (f64::from(control_time), outputs[1]),
-                        (after, outputs[2]),
-                        (1.0, 1.0),
-                    ],
-                );
-                let points = plan.operation().control_points().unwrap();
-                if offset != 0 {
-                    assert_ne!(
-                        map_time(key, 1.0, points),
-                        outputs[1] as f32,
-                        "key {key} offset {offset}: the mapped output must differ"
-                    );
-                }
-
-                let candidate = time_warp_clip_v1(&source, &plan).unwrap();
-                let times = &candidate.tracks[0].times;
-
-                assert_eq!(times.len(), 4, "key {key} offset {offset}");
-                assert_eq!(
-                    times[emitted_index], outputs[1] as f32,
-                    "key {key} offset {offset}: the span end takes its control point's output"
-                );
-                assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
-            }
         }
     }
 

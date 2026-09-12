@@ -4048,10 +4048,11 @@ sequence a candidate stores. The rows carry no output time and no value, so the
 independent `ClipMap` proof in the CLI crate consumes them for the sequence
 while still computing every expected time and value itself, rather than
 spelling coincidence a second way. What the proof takes from core is which
-keys exist and in what order; what it still derives on its own is every
-authored key's mapped output through its own piecewise-linear evaluation,
-every stored value from the source clip, and the bitwise comparison of both
-against the artifact it rereads. That holds for
+keys exist and in what order; every number is its own, including a knot's two
+times, which it narrows again from the control point the row names rather than
+reading the producer's resolution of them. A resolution that drifted by one
+binary32 place is then a mismatch rather than a shared assumption. That holds
+for
 every authored key the map has a control point for, including a track's own
 first and last: the span test is inclusive of one place on either side, so
 which side of a rounding step the reconstructed instant lands on does not

@@ -33,8 +33,8 @@ impl FootCycleFixture {
     /// The stance windows stay at their normalized positions, so every stance
     /// boundary still lands on an authored frame, but the authored times are
     /// no longer exact binary32 fractions of the clip duration.
-    fn create_at(frames: usize, rate: f32) -> Self {
-        Self::create_sampled(false, Sampling { frames, rate })
+    fn create_at_thirty_fps(frames: usize) -> Self {
+        Self::create_sampled(false, Sampling { frames, rate: 30.0 })
     }
 
     fn create_sampled(cyclic_contacts: bool, sampling: Sampling) -> Self {
@@ -838,7 +838,7 @@ fn forty_key_thirty_fps_set_publishes() {
 /// [`MEMBER_B_PHASE_OFFSET`] later, so its published clip must carry a
 /// different, still strictly increasing, set of times over the same interval.
 fn assert_thirty_fps_set_publishes(frames: usize) {
-    let fixture = FootCycleFixture::create_at(frames, 30.0);
+    let fixture = FootCycleFixture::create_at_thirty_fps(frames);
     let result = fixture.run();
     assert_success(&result);
     assert_eq!(count_files(&fixture.destination), 7);
@@ -906,7 +906,7 @@ fn published_track_times(artifact: &[u8]) -> Vec<Vec<f32>> {
 #[test]
 fn every_key_count_from_eighteen_to_sixty_one_publishes() {
     for frames in 18..=61 {
-        let fixture = FootCycleFixture::create_at(frames, 30.0);
+        let fixture = FootCycleFixture::create_at_thirty_fps(frames);
         let result = fixture.run();
         assert_eq!(
             result.status.code(),
