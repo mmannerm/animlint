@@ -1756,6 +1756,162 @@ mod tests {
         }
     }
 
+    /// Two control points the emitted domain cannot tell apart refuse whether
+    /// or not an authored key sits beside them.
+    ///
+    /// The pair is one instant there, so the plan names a breakpoint twice.
+    /// Deciding that between the knots rather than between the emitted keys is
+    /// what keeps the refusal independent of the source's own key times: with
+    /// a key beside the pair the first knot would otherwise coalesce into it
+    /// and the second would become an ordinary key one place away.
+    #[test]
+    fn two_control_points_that_are_one_instant_refuse_beside_a_key_or_not() {
+        let shared = 0.5_f32;
+        let values = vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)];
+        for beside_a_key in [true, false] {
+            let middle = if beside_a_key { shared } else { 0.25 };
+            for (label, second) in [
+                ("the same instant", f64::from(shared)),
+                ("adjacent instants", f64::from(shared.next_up())),
+            ] {
+                let source = clip(
+                    1.0,
+                    vec![vec_track(
+                        Interpolation::Linear,
+                        vec![0.0, middle, 1.0],
+                        values.clone(),
+                    )],
+                );
+                // A nudge too small to survive narrowing: both control points
+                // resolve into the pair this test is about.
+                let plan = plan(
+                    1.0,
+                    &[
+                        (0.0, 0.0),
+                        (f64::from(shared), 0.4),
+                        (second + f64::EPSILON, 0.6),
+                        (1.0, 1.0),
+                    ],
+                );
+                let points = plan.operation().control_points().unwrap();
+                let knots = time_warp_knots_v1(points, 1.0, &source.tracks[0]).collect::<Vec<_>>();
+                assert_eq!(knots.len(), 2, "{label}, beside a key: {beside_a_key}");
+                assert!(knots[1].coincides_with(knots[0].source_time()));
+
+                assert_preflight_and_candidate_error(
+                    &source,
+                    &plan,
+                    FootCycleClipWarpError::SourceTimeCollision { track_index: 0 },
+                );
+            }
+        }
+    }
+
+    /// Two authored keys one binary32 place apart stay two instants, and a
+    /// knot binds to the key it *is*, not to the key it is merely beside.
+    ///
+    /// Coalescing re-times an authored key; it never removes one. A rule that
+    /// bound greedily to the earlier key would give the control point's output
+    /// to the wrong one of the pair, and one that consumed every key it is
+    /// beside would delete the neighbour.
+    #[test]
+    fn a_knot_binds_to_the_authored_key_it_equals_not_the_one_beside_it() {
+        let first = 0.5_f32;
+        let second = first.next_up();
+        assert_ne!(first, second);
+
+        for bound_index in [1_usize, 2] {
+            let bound = if bound_index == 1 { first } else { second };
+            let source = clip(
+                1.0,
+                vec![vec_track(
+                    Interpolation::Linear,
+                    vec![0.0, first, second, 1.0],
+                    vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0), Vec3::splat(3.0)],
+                )],
+            );
+            let plan = plan(1.0, &[(0.0, 0.0), (f64::from(bound), 0.25), (1.0, 1.0)]);
+            let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+            let times = &candidate.tracks[0].times;
+
+            assert_eq!(times.len(), 4, "both authored keys must be retained");
+            assert_eq!(
+                times[bound_index], 0.25,
+                "the key the knot equals takes the control point's output"
+            );
+            let other = if bound_index == 1 { 2 } else { 1 };
+            assert_ne!(
+                times[other], 0.25,
+                "the key beside it keeps its own mapped output"
+            );
+            assert_eq!(
+                vec_values(&candidate.tracks[0]),
+                &[Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0), Vec3::splat(3.0)]
+            );
+        }
+    }
+
+    /// A knot beside a track's own span end coalesces from either side.
+    ///
+    /// The span test is inclusive, so all six placements around the first and
+    /// last authored key — one place below, exactly on it, one place above —
+    /// give that key its control point's output. Which side of a rounding step
+    /// the reconstructed instant lands on is exactly what must not decide the
+    /// outcome.
+    #[test]
+    fn a_knot_beside_a_track_span_end_coalesces_from_either_side() {
+        for (key, emitted_index, before, after, outputs) in [
+            (
+                0.25_f32,
+                0_usize,
+                0.249_999_8,
+                0.250_000_2,
+                [0.07, 0.1, 0.13],
+            ),
+            (0.75, 3, 0.749_999_8, 0.750_000_2, [0.87, 0.9, 0.93]),
+        ] {
+            for offset in [-1_i32, 0, 1] {
+                let control_time = f32::from_bits(key.to_bits().wrapping_add_signed(offset));
+                let source = clip(
+                    1.0,
+                    vec![vec_track(
+                        Interpolation::Linear,
+                        vec![0.25, 0.5, 0.75],
+                        vec![Vec3::ZERO, Vec3::ONE, Vec3::splat(2.0)],
+                    )],
+                );
+                let plan = plan(
+                    1.0,
+                    &[
+                        (0.0, 0.0),
+                        (before, outputs[0]),
+                        (f64::from(control_time), outputs[1]),
+                        (after, outputs[2]),
+                        (1.0, 1.0),
+                    ],
+                );
+                let points = plan.operation().control_points().unwrap();
+                if offset != 0 {
+                    assert_ne!(
+                        map_time(key, 1.0, points),
+                        outputs[1] as f32,
+                        "key {key} offset {offset}: the mapped output must differ"
+                    );
+                }
+
+                let candidate = time_warp_clip_v1(&source, &plan).unwrap();
+                let times = &candidate.tracks[0].times;
+
+                assert_eq!(times.len(), 4, "key {key} offset {offset}");
+                assert_eq!(
+                    times[emitted_index], outputs[1] as f32,
+                    "key {key} offset {offset}: the span end takes its control point's output"
+                );
+                assert!(times.windows(2).all(|pair| pair[0] < pair[1]));
+            }
+        }
+    }
+
     /// The predicate's far edge: two places apart are two instants.
     ///
     /// A control point two binary32 places from an authored key keeps its own
