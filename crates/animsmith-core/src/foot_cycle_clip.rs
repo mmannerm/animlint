@@ -881,10 +881,12 @@ impl<K: Iterator<Item = FootCycleClipWarpKnotV1>> Iterator for WarpRows<'_, K> {
 /// directly when their source times are equal or adjacent, and through an
 /// authored key when both are the same instant as it — only one can coalesce
 /// into it, and the other would publish as its own key one place from it. Each
-/// knot is therefore compared with the instant the previous knot named, which
-/// is the authored key's time when it coalesced. Two authored keys one place
-/// apart are not this case: they are the instants the track authored, and both
-/// are retained.
+/// knot is therefore compared against both instants of the knot before it: its
+/// own resolved source time, and the instant it named, which is the authored
+/// key's time when it coalesced. Neither alone is enough, because a knot that
+/// coalesced answers to a time one place from its own. Two authored keys one
+/// place apart are not this case: they are the instants the track authored,
+/// and both are retained.
 fn visit_warp_track_keys(
     track: &Track,
     track_index: usize,
@@ -893,20 +895,20 @@ fn visit_warp_track_keys(
     mut visit: impl FnMut(CandidateKey) -> Result<(), FootCycleClipWarpError>,
 ) -> Result<(), FootCycleClipWarpError> {
     let mut previous = None;
-    let mut previous_instant: Option<f32> = None;
+    let mut previous_knot: Option<(FootCycleClipWarpKnotV1, f32)> = None;
     for row in time_warp_rows_v1(points, duration, track) {
         let named = match row {
             FootCycleClipWarpRowV1::Authored(_) => None,
             FootCycleClipWarpRowV1::Knot(knot) => Some((knot, knot.source_time())),
             FootCycleClipWarpRowV1::Coalesced(index, knot) => Some((knot, track.times[index])),
         };
-        if let (Some(previous), Some((knot, _))) = (previous_instant, named)
-            && knot.coincides_with(previous)
+        if let (Some((previous, named_instant)), Some((knot, _))) = (previous_knot, named)
+            && (knot.coincides_with(previous.source_time()) || knot.coincides_with(named_instant))
         {
             return Err(FootCycleClipWarpError::SourceTimeCollision { track_index });
         }
-        if let Some((_, instant)) = named {
-            previous_instant = Some(instant);
+        if named.is_some() {
+            previous_knot = named;
         }
         let key = match row {
             FootCycleClipWarpRowV1::Authored(index) => CandidateKey {
@@ -1740,12 +1742,25 @@ mod tests {
     /// cannot represent.
     #[test]
     fn two_knots_straddling_one_authored_key_refuse() {
-        for (times, straddled) in [
-            (vec![0.0, 0.4, 0.6, 1.0], 0.4_f32),
-            (vec![0.25, 0.5, 0.75], 0.75_f32),
+        let interior = vec![0.0, 0.4, 0.6, 1.0];
+        let span_end = vec![0.25, 0.5, 0.75];
+        for (times, straddled, offsets) in [
+            // One place on each side: each knot is the key, only one can be.
+            (&interior, 0.4_f32, (-1_i32, 1_i32)),
+            (&span_end, 0.75, (-1, 1)),
+            // Both above the key, adjacent to each other: the first coalesces
+            // into the key and answers to a time one place from its own, so
+            // comparing the second only with that time would let it through.
+            (&interior, 0.4, (1, 2)),
+            // The mirror, both below.
+            (&interior, 0.4, (-2, -1)),
+            (&span_end, 0.75, (-2, -1)),
         ] {
-            let below = f64::from(f32::from_bits(straddled.to_bits() - 1));
-            let above = f64::from(f32::from_bits(straddled.to_bits() + 1));
+            let shifted = |offset: i32| {
+                f64::from(f32::from_bits(
+                    straddled.to_bits().wrapping_add_signed(offset),
+                ))
+            };
             let source = clip(
                 1.0,
                 vec![vec_track(
@@ -1754,12 +1769,23 @@ mod tests {
                     vec![Vec3::ZERO; times.len()],
                 )],
             );
-            let plan = plan(1.0, &[(0.0, 0.0), (below, 0.2), (above, 0.5), (1.0, 1.0)]);
+            let plan = plan(
+                1.0,
+                &[
+                    (0.0, 0.0),
+                    (shifted(offsets.0), 0.2),
+                    (shifted(offsets.1), 0.5),
+                    (1.0, 1.0),
+                ],
+            );
             let points = plan.operation().control_points().unwrap();
             let knots = time_warp_rows_v1(points, 1.0, &source.tracks[0])
                 .filter(|row| !matches!(row, FootCycleClipWarpRowV1::Authored(_)))
                 .count();
-            assert_eq!(knots, 2, "both knots are the same instant as {straddled}");
+            assert_eq!(
+                knots, 2,
+                "{straddled} {offsets:?}: both knots must reach the sequence"
+            );
 
             assert_preflight_and_candidate_error(
                 &source,

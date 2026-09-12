@@ -256,9 +256,11 @@ and both keys are retained. The one exception is a map knot that is the same
 instant as a source endpoint, `0` or the duration: the map's exact endpoint
 rows define the output there and a candidate retains those two instants as
 themselves, so such a knot contributes nothing. Two knots that name one instant
-— directly, or through the same authored key — and distinct output instants
-that collide after binary32 narrowing both refuse. One-key CUBICSPLINE tracks
-are retained, and multi-key cubic tracks are retained only for bit-exact
+refuse: each is compared against both instants of the knot before it, its own
+resolved source time and the instant it named, because a knot that coalesced
+into an authored key answers to a time one place from its own. Distinct output
+instants that collide after binary32 narrowing refuse too. One-key CUBICSPLINE
+tracks are retained, and multi-key cubic tracks are retained only for bit-exact
 constant values with zero tangents. The value caps are the shape-derived
 three-values-per-cubic-key maxima, so malformed N+1 storage refuses at shape or
 key bounds before it can become a separate valid value-only case.
