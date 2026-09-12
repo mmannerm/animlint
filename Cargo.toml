@@ -15,7 +15,7 @@ members = [
 exclude = ["tools/bevy-readback"]
 
 [workspace.package]
-version = "0.13.1"
+version = "0.13.2"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -38,11 +38,11 @@ keywords = ["animation", "gltf", "lint", "gamedev", "fbx"]
 categories = ["game-development", "graphics", "development-tools"]
 
 [workspace.dependencies]
-animsmith-core = { path = "crates/animsmith-core", version = "0.13.1" }
-animsmith-engine = { path = "crates/animsmith-engine", version = "0.13.1" }
-animsmith-gltf = { path = "crates/animsmith-gltf", version = "0.13.1" }
-animsmith-fbx = { path = "crates/animsmith-fbx", version = "0.13.1" }
-animsmith-report = { path = "crates/animsmith-report", version = "0.13.1" }
+animsmith-core = { path = "crates/animsmith-core", version = "0.13.2" }
+animsmith-engine = { path = "crates/animsmith-engine", version = "0.13.2" }
+animsmith-gltf = { path = "crates/animsmith-gltf", version = "0.13.2" }
+animsmith-fbx = { path = "crates/animsmith-fbx", version = "0.13.2" }
+animsmith-report = { path = "crates/animsmith-report", version = "0.13.2" }
 animsmith-testkit = { path = "crates/animsmith-testkit" }
 ufbx = "0.11"
 glam = { version = "0.33", features = ["scalar-math", "libm"] }
