@@ -757,20 +757,25 @@ fn preflight(
 
 /// One row of the key sequence a track emits for a validated V1 time warp.
 ///
-/// The rows say which keys a candidate stores and in what order; they carry no
-/// output time and no value, so a builder and an independent proof can share
-/// this one answer while each computes the stored time and the stored value
-/// its own way. What they share is [`FootCycleClipWarpKnotV1::coincides_with`]
-/// — the question that had three different answers before, and the only one
-/// whose disagreement is silent.
+/// The rows say which keys a candidate stores and in what order. A knot-
+/// bearing row carries the [`FootCycleClipWarpKnotV1`] it names — its
+/// control-point index and that point's two narrowed times — and no stored
+/// value. A consumer that must not trust the producer reads the index and
+/// narrows the control point itself, as the independent `ClipMap` proof in
+/// the `animsmith` crate does, so a builder and that proof share one answer to
+/// [`FootCycleClipWarpKnotV1::coincides_with`] — the question that had three
+/// different answers before, and the only one whose disagreement is silent —
+/// while every number each of them stores stays its own.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FootCycleClipWarpRowV1 {
     /// The authored key at this index, at its own time, mapped by the warp.
     Authored(usize),
-    /// A knot that is no authored key: one key sampled at its source time.
+    /// A knot that is no authored key: one key sampled at the instant its
+    /// control point resolves to.
     Knot(FootCycleClipWarpKnotV1),
     /// One authored key and the knot that is the same instant, as one key: the
-    /// authored time and value, at the knot's output time.
+    /// authored time and value, at the instant this knot's control point maps
+    /// that to.
     Coalesced(usize, FootCycleClipWarpKnotV1),
 }
 
@@ -780,8 +785,11 @@ pub enum FootCycleClipWarpRowV1 {
 /// A knot is one interior control point of the validated map, resolved once
 /// into the binary32 time domain the candidate stores; see
 /// [`FootCycleClipWarpKnotV1`]. Only a LINEAR track has knots, and only where
-/// the narrowed instant falls strictly inside the track's authored span
-/// without being the same instant as a source endpoint.
+/// the narrowed instant is the same instant as the track's first or last
+/// authored key — one representable place on either side of it counts — or
+/// falls strictly between them. A knot that is the same instant as a source
+/// endpoint, `0` or the duration, is the one exception and contributes
+/// nothing: the map's exact `(0,0)` and `(1,1)` rows define the output there.
 ///
 /// A knot that is the same instant as the next authored key coalesces with it;
 /// otherwise whichever comes first in the emitted binary32 domain is yielded
@@ -798,9 +806,11 @@ pub enum FootCycleClipWarpRowV1 {
 /// authored keys are retained: coalescing re-times an authored key, it never
 /// removes one.
 ///
-/// The rows are not themselves a refusal check: two knots that narrow onto one
-/// instant still arrive as two rows, and it is the emitted times built from
-/// them that refuse.
+/// The rows are not themselves a refusal check: two knots that name one
+/// instant — directly, or through the same authored key, which only one of
+/// them can coalesce into — still arrive as two rows, and the producer refuses
+/// them. A consumer proving a candidate sees the same two rows and never
+/// reaches that candidate.
 pub fn time_warp_rows_v1<'a>(
     control_points: &'a [ContactTimeWarpControlPointV1],
     duration: f32,
@@ -865,13 +875,16 @@ impl<K: Iterator<Item = FootCycleClipWarpKnotV1>> Iterator for WarpRows<'_, K> {
 /// [`time_warp_rows_v1`] decides which keys the track emits and in what order;
 /// this attaches the builder's own output times and values to them.
 ///
-/// Two knots that are one instant — the same binary32 source time, or adjacent
-/// ones — are a [`FootCycleClipWarpError::SourceTimeCollision`]: the plan
-/// names two breakpoints the emitted domain cannot tell apart. That is decided
-/// between the knots themselves, so it does not depend on whether an authored
-/// key happens to sit beside the pair and take one of them into itself. Two
-/// authored keys one place apart are not this case: they are the instants the
-/// track authored, and both are retained.
+/// Two knots that name one instant are a
+/// [`FootCycleClipWarpError::SourceTimeCollision`]: the plan names two
+/// breakpoints the emitted domain cannot tell apart. They name one instant
+/// directly when their source times are equal or adjacent, and through an
+/// authored key when both are the same instant as it — only one can coalesce
+/// into it, and the other would publish as its own key one place from it. Each
+/// knot is therefore compared with the instant the previous knot named, which
+/// is the authored key's time when it coalesced. Two authored keys one place
+/// apart are not this case: they are the instants the track authored, and both
+/// are retained.
 fn visit_warp_track_keys(
     track: &Track,
     track_index: usize,

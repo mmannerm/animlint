@@ -4044,10 +4044,11 @@ nothing is representable between them — are one emitted key at the authored
 time and value, carrying the control point's own output.
 `FootCycleClipWarpKnotV1` is the single definition of that question, and
 `time_warp_rows_v1` merges a track's authored keys with its knots into the key
-sequence a candidate stores. The rows carry no output time and no value, so the
-independent `ClipMap` proof in the CLI crate consumes them for the sequence
-while still computing every expected time and value itself, rather than
-spelling coincidence a second way. What the proof takes from core is which
+sequence a candidate stores. A knot-bearing row carries that knot — its
+control-point index and that point's two narrowed times — and no stored value,
+so the independent `ClipMap` proof in the CLI crate consumes the rows for the
+sequence and reads only the index, narrowing the control point itself rather
+than spelling coincidence a second way. What the proof takes from core is which
 keys exist and in what order; every number is its own, including a knot's two
 times, which it narrows again from the control point the row names rather than
 reading the producer's resolution of them. A resolution that drifted by one
