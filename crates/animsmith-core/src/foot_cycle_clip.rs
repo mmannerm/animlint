@@ -365,7 +365,7 @@ impl FootCycleClipWarpKnotV1 {
 /// inside the track's authored span.
 ///
 /// A knot that is the same instant as a source endpoint — `0` or `duration` —
-/// contributes nothing at all. [`map_time`] evaluates the exact `(0,0)` and
+/// contributes nothing at all. The map evaluates its exact `(0,0)` and
 /// `(1,1)` rows there, so a candidate retains those two instants as
 /// themselves; letting an interior point re-time a key there would silently
 /// start the candidate late or end it early instead. Every other authored key
