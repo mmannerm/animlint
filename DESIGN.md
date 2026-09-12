@@ -4053,9 +4053,8 @@ keys exist and in what order; every number is its own, including a knot's two
 times, which it narrows again from the control point the row names rather than
 reading the producer's resolution of them. A resolution that drifted by one
 binary32 place is then a mismatch rather than a shared assumption. That holds
-for
-every authored key the map has a control point for, including a track's own
-first and last: the span test is inclusive of one place on either side, so
+for every authored key the map has a control point for, including a track's
+own first and last: the span test is inclusive of one place on either side, so
 which side of a rounding step the reconstructed instant lands on does not
 decide the outcome. A key the knot is bit-equal to binds before a key it is
 merely beside, and coalescing only ever re-times an authored key — it never

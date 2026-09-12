@@ -1833,7 +1833,13 @@ mod tests {
                     ],
                 );
                 let points = plan.operation().control_points().unwrap();
-                let knots = time_warp_knots_v1(points, 1.0, &source.tracks[0]).collect::<Vec<_>>();
+                let knots = time_warp_rows_v1(points, 1.0, &source.tracks[0])
+                    .filter_map(|row| match row {
+                        FootCycleClipWarpRowV1::Authored(_) => None,
+                        FootCycleClipWarpRowV1::Knot(knot)
+                        | FootCycleClipWarpRowV1::Coalesced(_, knot) => Some(knot),
+                    })
+                    .collect::<Vec<_>>();
                 assert_eq!(knots.len(), 2, "{label}, beside a key: {beside_a_key}");
                 assert!(knots[1].coincides_with(knots[0].source_time()));
 
@@ -1972,9 +1978,12 @@ mod tests {
         );
         let plan = plan(1.0, &[(0.0, 0.0), (f64::from(two_below), 0.25), (1.0, 1.0)]);
         let points = plan.operation().control_points().unwrap();
-        let knot = time_warp_knots_v1(points, 1.0, &source.tracks[0])
-            .next()
-            .expect("one interior knot");
+        let knot = time_warp_rows_v1(points, 1.0, &source.tracks[0])
+            .find_map(|row| match row {
+                FootCycleClipWarpRowV1::Knot(knot) => Some(knot),
+                _ => None,
+            })
+            .expect("one interior knot of its own");
         assert_eq!(knot.source_time(), two_below);
         assert!(!knot.coincides_with(authored_time));
 
